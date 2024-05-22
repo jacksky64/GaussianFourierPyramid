@@ -42,18 +42,21 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
+
+    <Import Project="u:\CUDA.staticlib.12.1.1\build\native\CUDA.staticlib.props" Condition="Exists('u:\CUDA.staticlib.12.1.1\build\native\CUDA.staticlib.props')" />
+
   </ImportGroup>
   <ImportGroup Label="Shared">
   </ImportGroup>
@@ -73,6 +76,14 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <IncludePath>$(OPENCV_INCLUDE_DIR);$(VC_IncludePath);$(WindowsSDK_IncludePath);</IncludePath>
     <LibraryPath>$(OPENCV_LIB_DIR);$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64)</LibraryPath>
+    <Linkage-cuda>dynamic</Linkage-cuda>
+    <Linkage-opencvx64-staticlib>static</Linkage-opencvx64-staticlib>
+    <Linkage-tbbx64>dynamic</Linkage-tbbx64>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Linkage-cuda>dynamic</Linkage-cuda>
+    <Linkage-opencvx64-staticlib>static</Linkage-opencvx64-staticlib>
+    <Linkage-tbbx64>dynamic</Linkage-tbbx64>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -137,7 +148,28 @@
   <ItemGroup>
     <ClInclude Include="LLF.hpp" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="packages.config" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
+    <Import Project="u:\CUDA.redist.12.1.1\build\native\CUDA.redist.targets" Condition="Exists('u:\CUDA.redist.12.1.1\build\native\CUDA.redist.targets')" />
+    <Import Project="u:\CUDA.staticlib.12.1.1\build\native\CUDA.staticlib.targets" Condition="Exists('u:\CUDA.staticlib.12.1.1\build\native\CUDA.staticlib.targets')" />
+    <Import Project="u:\TBB.common.2020.3.0\build\native\TBB.common.targets" Condition="Exists('u:\TBB.common.2020.3.0\build\native\TBB.common.targets')" />
+    <Import Project="u:\TBB.redist.x64.2020.3.0\build\native\TBB.redist.x64.targets" Condition="Exists('u:\TBB.redist.x64.2020.3.0\build\native\TBB.redist.x64.targets')" />
+    <Import Project="u:\TBB.lib.x64.2020.3.0\build\native\TBB.lib.x64.targets" Condition="Exists('u:\TBB.lib.x64.2020.3.0\build\native\TBB.lib.x64.targets')" />
+    <Import Project="u:\OpenCV.staticlib.x64.4.8.0\build\native\OpenCV.staticlib.x64.targets" Condition="Exists('u:\OpenCV.staticlib.x64.4.8.0\build\native\OpenCV.staticlib.x64.targets')" />
   </ImportGroup>
+  <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
+    <PropertyGroup>
+      <ErrorText>This project references NuGet package(s) that are missing on this computer. Use NuGet Package Restore to download them.  For more information, see http://go.microsoft.com/fwlink/?LinkID=322105. The missing file is {0}.</ErrorText>
+    </PropertyGroup>
+    <Error Condition="!Exists('u:\CUDA.redist.12.1.1\build\native\CUDA.redist.targets')" Text="$([System.String]::Format('$(ErrorText)', 'u:\CUDA.redist.12.1.1\build\native\CUDA.redist.targets'))" />
+    <Error Condition="!Exists('u:\CUDA.staticlib.12.1.1\build\native\CUDA.staticlib.props')" Text="$([System.String]::Format('$(ErrorText)', 'u:\CUDA.staticlib.12.1.1\build\native\CUDA.staticlib.props'))" />
+    <Error Condition="!Exists('u:\CUDA.staticlib.12.1.1\build\native\CUDA.staticlib.targets')" Text="$([System.String]::Format('$(ErrorText)', 'u:\CUDA.staticlib.12.1.1\build\native\CUDA.staticlib.targets'))" />
+    <Error Condition="!Exists('u:\TBB.common.2020.3.0\build\native\TBB.common.targets')" Text="$([System.String]::Format('$(ErrorText)', 'u:\TBB.common.2020.3.0\build\native\TBB.common.targets'))" />
+    <Error Condition="!Exists('u:\TBB.redist.x64.2020.3.0\build\native\TBB.redist.x64.targets')" Text="$([System.String]::Format('$(ErrorText)', 'u:\TBB.redist.x64.2020.3.0\build\native\TBB.redist.x64.targets'))" />
+    <Error Condition="!Exists('u:\TBB.lib.x64.2020.3.0\build\native\TBB.lib.x64.targets')" Text="$([System.String]::Format('$(ErrorText)', 'u:\TBB.lib.x64.2020.3.0\build\native\TBB.lib.x64.targets'))" />
+    <Error Condition="!Exists('u:\OpenCV.staticlib.x64.4.8.0\build\native\OpenCV.staticlib.x64.targets')" Text="$([System.String]::Format('$(ErrorText)', 'u:\OpenCV.staticlib.x64.4.8.0\build\native\OpenCV.staticlib.x64.targets'))" />
+  </Target>
 </Project>

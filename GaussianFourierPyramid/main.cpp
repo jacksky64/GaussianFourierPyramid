@@ -33,24 +33,95 @@ void compare(const string wname, const Mat& src1, const Mat& src2)
 	Mat show;
 	while (key != 'q')
 	{
-		addWeighted(src1, a * 0.01, src2, (100 - a) * 0.01, 0.0, show);
-		imshow(wname, show);
+		addWeighted(src1, double(a) * 0.01, src2, double(100 - a) * 0.01, 0.0, show);
+ 		imshow(wname, show);
 		key = waitKey(1);
 	}
 }
 
-int main()
+int dbt()
 {
 	//load image
-	Mat src = imread("flower.png");
+	Mat src = imread("s_0020.png", cv::IMREAD_GRAYSCALE | cv::IMREAD_ANYDEPTH);
+	src.convertTo(src, CV_32F);
+	cv::normalize(src, src, 0., 255., cv::NormTypes::NORM_MINMAX);
+	cv::Mat vMask;
+	cv::compare(src, 0., vMask, cv::CmpTypes::CMP_GT);
+
+
 	//destination image
 	Mat destFastLLF, destFourierLLF, destFastLLFAaptive, destFourierLLFAaptive;
 
 	//parameter setting
 	const float sigma = 30.f;
-	const float boost = 2.f;
-	const int level = 2;
-	const int order = 4;
+	const float boost = 3.f;
+	const int level = 6;
+	const int order = 8;
+
+	//create instance
+	FastLLF llf;
+	GaussianFourierLLF gfllf;
+
+	//parameter fix filter
+	llf.filter(src, destFastLLF, order * 2, sigma, boost, level);//order*2: FourierLLF requires double pyramids due to cos and sin pyramids; thus we double the order to adjust the number of pyramids.
+	gfllf.filter(src, destFourierLLF, order, sigma, boost, level);
+
+	//parameter adaptive filter
+	//generate parameter maps (circle shape)
+	Mat sigmaMap(src.size(), CV_32F);
+	sigmaMap.setTo(1.f);
+	sigmaMap.setTo(sigma,vMask);
+
+	cv::Mat boostGain;
+	src.copyTo(boostGain);
+	cv::Mat d;
+	d = (boostGain - 170.f);
+	d = -d * (1.f/ ( 10.f));
+	cv::exp(d, d);
+	d = 1. + d;
+	d = 1. / d;
+	boostGain = 0.1 + 5. * d;
+
+
+	Mat boostMap(src.size(), CV_32F);
+	boostMap.setTo(0.f);
+	boostGain.copyTo(boostMap,vMask);
+
+
+	//filter
+	llf.filter(src, destFastLLFAaptive, order * 2, sigmaMap, boostMap, level);
+	gfllf.filter(src, destFourierLLFAaptive, order, sigmaMap, boostMap, level);
+
+
+	cv::imwrite(".\\destFastLLF.tif", destFastLLF);
+	cv::imwrite(".\\destFourierLLF.tif", destFourierLLF);
+	cv::imwrite(".\\destFastLLFAaptive.tif", destFastLLFAaptive);
+	cv::imwrite(".\\destFourierLLFAaptive.tif", destFourierLLFAaptive);
+	return 0;
+}
+
+int main()
+{
+	return dbt();
+
+	//load image
+	//Mat src = imread("flower.png");
+	Mat src = imread("Torace1.Dat.png", cv::IMREAD_GRAYSCALE|cv::IMREAD_ANYDEPTH);
+	src.convertTo(src, CV_32F);
+	src = src + 1;
+	cv::log(src, src);
+	cv::normalize(src, src, 0., 255., cv::NormTypes::NORM_MINMAX);
+	cv::Mat vMask;
+	cv::threshold(src, vMask, 0., 1., cv::ThresholdTypes::THRESH_BINARY);
+
+	//destination image
+	Mat destFastLLF, destFourierLLF, destFastLLFAaptive, destFourierLLFAaptive;
+
+	//parameter setting
+	const float sigma = 30.f;
+	const float boost = 10.f;
+	const int level = 10;
+	const int order = 5;
 
 	//create instance
 	FastLLF llf;
@@ -73,13 +144,17 @@ int main()
 	//filter
 	llf.filter(src, destFastLLFAaptive, order * 2, sigmaMap, boostMap, level);
 	gfllf.filter(src, destFourierLLFAaptive, order, sigmaMap, boostMap, level);
+	cv::imwrite(".\\destFastLLF.tif", destFastLLF);
+	cv::imwrite(".\\destFourierLLF.tif", destFourierLLF);
+	cv::imwrite(".\\destFastLLFAaptive.tif", destFastLLFAaptive);
+	cv::imwrite(".\\destFourierLLFAaptive.tif", destFourierLLFAaptive);
 
-	imshow("src", src);
-	imshow("Fast LLF dest", destFastLLF);
-	imshow("Fourier LLF dest", destFourierLLF);
-	imshow("Fast LLF Adaptive dest", destFastLLFAaptive);
-	imshow("Fourier LLF Adaptive dest", destFourierLLFAaptive);
-	compare("LLF", destFastLLF, destFourierLLF);//quit `q` key
-	compare("LLF", destFastLLFAaptive, destFourierLLFAaptive);//quit `q` key
+	//imshow("src", src);
+	//imshow("Fast LLF dest", destFastLLF);
+	//imshow("Fourier LLF dest", destFourierLLF);
+	//imshow("Fast LLF Adaptive dest", destFastLLFAaptive);
+	//imshow("Fourier LLF Adaptive dest", destFourierLLFAaptive);
+	//compare("LLF", destFastLLF, destFourierLLF);//quit `q` key
+	//compare("LLFAdaptive", destFastLLFAaptive, destFourierLLFAaptive);//quit `q` key
 	return 0;
 }
