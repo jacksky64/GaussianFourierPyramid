@@ -2,6 +2,8 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include <intrin.h>
+
 #pragma region pyramidUtility
 //image input version
 static void buildLaplacianPyramid(const cv::Mat& src, std::vector<cv::Mat>& destPyramid, const int level)
@@ -41,6 +43,184 @@ static void collapseLaplacianPyramid(const std::vector<cv::Mat>& LaplacianPyrami
 	}
 	cv::add(ret, LaplacianPyramid[0], dest);
 }
+#pragma endregion
+
+#pragma region MSEbilateral
+class MSEBilateral
+{
+private:
+	std::vector<cv::Mat> GaussianPyramid;////level+1
+	std::vector<cv::Mat> LaplacianPyramid;//level+1
+
+	float m_sigma_range = 0.f;
+	float m_sigma_space = 1.f;
+	int m_filterSize = 9;
+
+	int get_simd_floor(const int val, const int simdwidth)
+	{
+		return (val / simdwidth) * simdwidth;
+	}
+
+	void remap(const cv::Mat& src, cv::Mat& dest, const int filterSize, const float sigma_range, const float sigma_space)
+	{
+		cv::Mat r;
+		// filter doesn't work inplace
+		cv::bilateralFilter(src, r, filterSize, sigma_range, sigma_space);
+		r.copyTo(dest);
+	}
+
+	//main processing 
+	void body(const cv::Mat& src, cv::Mat& dest, const int level)
+	{
+		dest.create(src.size(), src.type());
+		//(0) alloc
+		if (GaussianPyramid.size() != level + 1)GaussianPyramid.resize(level + 1);
+
+		if (src.depth() == CV_32F) src.copyTo(GaussianPyramid[0]);
+		else src.convertTo(GaussianPyramid[0], CV_32F);
+
+		//(1) Build Gaussian Pyramid
+		cv::buildPyramid(GaussianPyramid[0], GaussianPyramid, level);
+
+		//(2-2) Build Laplacian Pyramids
+		buildLaplacianPyramid(GaussianPyramid, LaplacianPyramid, level);
+
+		//(2) remap Laplacian Pyramids
+		for (int n = 0; n < level; n++)
+		{
+			remap(LaplacianPyramid[n], LaplacianPyramid[n], m_filterSize, m_sigma_range, m_sigma_space);
+		}
+
+		//set last level
+		LaplacianPyramid[level] = GaussianPyramid[level];
+
+		//(4) Collapse Laplacian Pyramid to the last level
+		collapseLaplacianPyramid(LaplacianPyramid, LaplacianPyramid[0]);
+
+		LaplacianPyramid[0].convertTo(dest, src.type());//convert 32F to output type
+	}
+
+public:
+	void filter(const cv::Mat& src, cv::Mat& dest, float sigma_range, float sigma_space, int filterSize,  int level = 2)
+	{
+		m_sigma_range = sigma_range;
+		m_sigma_space = sigma_space;
+		m_filterSize = filterSize;
+
+		body(src, dest, level);
+	}
+};
+
+#pragma endregion
+
+#pragma region MSE
+class MSEGaussRemap
+{
+private:
+	std::vector<cv::Mat> GaussianPyramid;////level+1
+	std::vector<cv::Mat> LaplacianPyramid;//level+1
+
+	int get_simd_floor(const int val, const int simdwidth)
+	{
+		return (val / simdwidth) * simdwidth;
+	}
+
+	void remap(const cv::Mat& src, cv::Mat& dest, const float g, const float sigma_range, const float boost)
+	{
+		if (src.data != dest.data) dest.create(src.size(), CV_32F);
+		if (1)
+		{
+			const float* s = src.ptr<float>();
+			float* d = dest.ptr<float>();
+			const int size = src.size().area();
+			const int SIZE32 = get_simd_floor(size, 32);
+			const int SIZE8 = get_simd_floor(size, 8);
+			const __m256 mg = _mm256_set1_ps(g);
+			const float coeff = float(1.0 / (-2.0 * sigma_range * sigma_range));
+			const __m256 mcoeff = _mm256_set1_ps(coeff);
+			const __m256 mdetail = _mm256_set1_ps(boost);
+
+			__m256 ms, subsg;
+			for (int i = 0; i < SIZE32; i += 32)
+			{
+				ms = _mm256_loadu_ps(s + i);
+				subsg = _mm256_sub_ps(ms, mg);
+				_mm256_storeu_ps(d + i, _mm256_fmadd_ps(subsg, _mm256_mul_ps(mdetail, _mm256_exp_ps(_mm256_mul_ps(_mm256_mul_ps(subsg, subsg), mcoeff))), ms));
+
+				ms = _mm256_loadu_ps(s + i + 8);
+				subsg = _mm256_sub_ps(ms, mg);
+				_mm256_storeu_ps(d + i + 8, _mm256_fmadd_ps(subsg, _mm256_mul_ps(mdetail, _mm256_exp_ps(_mm256_mul_ps(_mm256_mul_ps(subsg, subsg), mcoeff))), ms));
+
+				ms = _mm256_loadu_ps(s + i + 16);
+				subsg = _mm256_sub_ps(ms, mg);
+				_mm256_storeu_ps(d + i + 16, _mm256_fmadd_ps(subsg, _mm256_mul_ps(mdetail, _mm256_exp_ps(_mm256_mul_ps(_mm256_mul_ps(subsg, subsg), mcoeff))), ms));
+
+				ms = _mm256_loadu_ps(s + i + 24);
+				subsg = _mm256_sub_ps(ms, mg);
+				_mm256_storeu_ps(d + i + 24, _mm256_fmadd_ps(subsg, _mm256_mul_ps(mdetail, _mm256_exp_ps(_mm256_mul_ps(_mm256_mul_ps(subsg, subsg), mcoeff))), ms));
+			}
+			for (int i = SIZE32; i < SIZE8; i += 8)
+			{
+				ms = _mm256_loadu_ps(s + i);
+				subsg = _mm256_sub_ps(ms, mg);
+				_mm256_storeu_ps(d + i, _mm256_fmadd_ps(subsg, _mm256_mul_ps(mdetail, _mm256_exp_ps(_mm256_mul_ps(_mm256_mul_ps(subsg, subsg), mcoeff))), ms));
+			}
+
+			for (int i = SIZE8; i < size; i++)
+			{
+				const float x = s[i] - g;
+				d[i] = x * boost * exp(x * x * coeff) + s[i];
+			}
+		}
+		else
+		{
+			// debug
+			const int size = src.size().area();
+			const float* s = src.ptr<float>();
+			float* d = dest.ptr<float>();
+			const float coeff = float(1.0 / (-2.0 * sigma_range * sigma_range));
+
+			for (int i = 0; i < size; i++)
+			{
+				const float x = s[i] - g;
+				d[i] = x * boost * exp(x * x * coeff) + s[i];
+			}
+		}
+	}
+
+public:
+	void filter(const cv::Mat& src, cv::Mat& dest, float sigma_range, const std::vector<float>& boost, int level = 2)
+	{
+		dest.create(src.size(), src.type());
+		//(0) alloc
+		if (GaussianPyramid.size() != level + 1)GaussianPyramid.resize(level + 1);
+
+		if (src.depth() == CV_32F) src.copyTo(GaussianPyramid[0]);
+		else src.convertTo(GaussianPyramid[0], CV_32F);
+
+		//(1) Build Gaussian Pyramid
+		cv::buildPyramid(GaussianPyramid[0], GaussianPyramid, level);
+
+		//(2-2) Build Laplacian Pyramids
+		buildLaplacianPyramid(GaussianPyramid, LaplacianPyramid, level);
+
+		//(2) remap Laplacian Pyramids
+		for (int n = 0; n < level; n++)
+		{
+			const float levelBoost = (n < boost.size() ? boost.at(n) : boost.at(boost.size() - 1));
+			remap(LaplacianPyramid[n], LaplacianPyramid[n], 0.f, sigma_range, levelBoost);
+		}
+
+		//set last level
+		LaplacianPyramid[level] = GaussianPyramid[level];
+
+		//(4) Collapse Laplacian Pyramid to the last level
+		collapseLaplacianPyramid(LaplacianPyramid, LaplacianPyramid[0]);
+
+		LaplacianPyramid[0].convertTo(dest, src.type());//convert 32F to output type
+	}
+};
+
 #pragma endregion
 
 #pragma region LLF

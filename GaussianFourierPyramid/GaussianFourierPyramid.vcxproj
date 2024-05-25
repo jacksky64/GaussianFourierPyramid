@@ -54,9 +54,7 @@
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
-
     <Import Project="u:\CUDA.staticlib.12.1.1\build\native\CUDA.staticlib.props" Condition="Exists('u:\CUDA.staticlib.12.1.1\build\native\CUDA.staticlib.props')" />
-
   </ImportGroup>
   <ImportGroup Label="Shared">
   </ImportGroup>
@@ -79,11 +77,13 @@
     <Linkage-cuda>dynamic</Linkage-cuda>
     <Linkage-opencvx64-staticlib>static</Linkage-opencvx64-staticlib>
     <Linkage-tbbx64>dynamic</Linkage-tbbx64>
+    <Linkage-boostx64>static</Linkage-boostx64>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <Linkage-cuda>dynamic</Linkage-cuda>
     <Linkage-opencvx64-staticlib>static</Linkage-opencvx64-staticlib>
     <Linkage-tbbx64>dynamic</Linkage-tbbx64>
+    <Linkage-boostx64>static</Linkage-boostx64>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -119,10 +119,12 @@
       <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>libboost_program_options-$(BOOST_X64_LIB_POSTFIX).lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -134,12 +136,14 @@
       </SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>libboost_program_options-$(BOOST_X64_LIB_POSTFIX).lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -159,6 +163,9 @@
     <Import Project="u:\TBB.redist.x64.2020.3.0\build\native\TBB.redist.x64.targets" Condition="Exists('u:\TBB.redist.x64.2020.3.0\build\native\TBB.redist.x64.targets')" />
     <Import Project="u:\TBB.lib.x64.2020.3.0\build\native\TBB.lib.x64.targets" Condition="Exists('u:\TBB.lib.x64.2020.3.0\build\native\TBB.lib.x64.targets')" />
     <Import Project="u:\OpenCV.staticlib.x64.4.8.0\build\native\OpenCV.staticlib.x64.targets" Condition="Exists('u:\OpenCV.staticlib.x64.4.8.0\build\native\OpenCV.staticlib.x64.targets')" />
+    <Import Project="u:\boost.common.1.81.0\build\native\boost.common.targets" Condition="Exists('u:\boost.common.1.81.0\build\native\boost.common.targets')" />
+    <Import Project="u:\boost.redist.x64.1.81.0\build\native\boost.redist.x64.targets" Condition="Exists('u:\boost.redist.x64.1.81.0\build\native\boost.redist.x64.targets')" />
+    <Import Project="u:\boost.lib.x64.1.81.0\build\native\boost.lib.x64.targets" Condition="Exists('u:\boost.lib.x64.1.81.0\build\native\boost.lib.x64.targets')" />
   </ImportGroup>
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
     <PropertyGroup>
@@ -171,5 +178,8 @@
     <Error Condition="!Exists('u:\TBB.redist.x64.2020.3.0\build\native\TBB.redist.x64.targets')" Text="$([System.String]::Format('$(ErrorText)', 'u:\TBB.redist.x64.2020.3.0\build\native\TBB.redist.x64.targets'))" />
     <Error Condition="!Exists('u:\TBB.lib.x64.2020.3.0\build\native\TBB.lib.x64.targets')" Text="$([System.String]::Format('$(ErrorText)', 'u:\TBB.lib.x64.2020.3.0\build\native\TBB.lib.x64.targets'))" />
     <Error Condition="!Exists('u:\OpenCV.staticlib.x64.4.8.0\build\native\OpenCV.staticlib.x64.targets')" Text="$([System.String]::Format('$(ErrorText)', 'u:\OpenCV.staticlib.x64.4.8.0\build\native\OpenCV.staticlib.x64.targets'))" />
+    <Error Condition="!Exists('u:\boost.common.1.81.0\build\native\boost.common.targets')" Text="$([System.String]::Format('$(ErrorText)', 'u:\boost.common.1.81.0\build\native\boost.common.targets'))" />
+    <Error Condition="!Exists('u:\boost.redist.x64.1.81.0\build\native\boost.redist.x64.targets')" Text="$([System.String]::Format('$(ErrorText)', 'u:\boost.redist.x64.1.81.0\build\native\boost.redist.x64.targets'))" />
+    <Error Condition="!Exists('u:\boost.lib.x64.1.81.0\build\native\boost.lib.x64.targets')" Text="$([System.String]::Format('$(ErrorText)', 'u:\boost.lib.x64.1.81.0\build\native\boost.lib.x64.targets'))" />
   </Target>
 </Project>
