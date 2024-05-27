@@ -37,165 +37,14 @@ using namespace cv;
 #pragma comment(lib, CV_LIBRARY(imgproc))
 #pragma endregion
 
-#pragma region gammaEnh
-class gammaEnh
-{
-public:
-	void applyGamma(const cv::Mat& srcDest, const cv::Mat& mask, double gamma, double tailPercent = 0.001, double enlargeRangePerc = 0.1)
-	{	
-		ushort minValue{ 0 };
-		ushort maxValue{ 0 };
-
-		std::vector<cv::Mat> s{ srcDest };
-		std::vector<cv::Mat> m{ mask};
-
-		findMinMax(s, m, minValue, maxValue, tailPercent);
-
-		// enlarge range
-		const double range{ double(maxValue) - double(minValue) };
-		const double rangeAdj{ range * enlargeRangePerc };
-
-		const double enlargedMinValue = std::max(0., double(minValue) - rangeAdj);
-		const double enlargedMaxValue = std::min(65535., double(maxValue) + rangeAdj);
-		const double enlargedRange{ enlargedMaxValue - enlargedMinValue };
-
-		gammaCorrection(s, gamma, ushort(enlargedMinValue), ushort(enlargedMaxValue));
-	}
-
-	void applyGamma(const std::vector<cv::Mat>& srcDest, const std::vector<cv::Mat>& mask, double gamma, double tailPercent = 0.001, double enlargeRangePerc = 0.1)
-	{
-		ushort minValue{ 0 };
-		ushort maxValue{ 0 };
-
-		findMinMax(srcDest, mask, minValue, maxValue, tailPercent);
-
-		// enlarge range
-		const double range{ double(maxValue) - double(minValue) };
-		const double rangeAdj{ range * enlargeRangePerc };
-
-		const double enlargedMinValue = std::max(0., double(minValue) - rangeAdj);
-		const double enlargedMaxValue = std::min(65535., double(maxValue) + rangeAdj);
-		const double enlargedRange{ enlargedMaxValue - enlargedMinValue };
-
-		gammaCorrection(srcDest, gamma, ushort(enlargedMinValue), ushort(enlargedMaxValue));
-	}
-
-private:
-	// Function to compute histogram and determine minValue and maxValue
-	void findMinMax(const std::vector<cv::Mat>& src, const std::vector<cv::Mat>& mask, ushort& minValue, ushort& maxValue, double tailPercent = 0.01)
-	{
-		CV_Assert(src.size() == mask.size());
-
-		// Calculate the histogram
-		const int histSize = 65536;
-		cv::Mat hist;
-		float range[] = { 0, 65536 };
-		const float* histRange = { range };
-		bool uniform = true, accumulate = true;
-
-		for (auto n = 0; n < src.size(); ++n)
-		{
-			auto s{ src.at(n)};
-			auto m{ mask.at(n)};
-			CV_Assert(s.type() == CV_16U);
-			CV_Assert(m.type() == CV_8U);
-			cv::calcHist(&s, 1, 0, m, hist, 1, &histSize, &histRange, uniform, accumulate);
-		}
-
-		// Calculate the cumulative histogram
-		std::vector<int> cumulative(histSize, 0);
-		cumulative[0] = (int)hist.at<float>(0);
-		for (int i = 1; i < histSize; ++i) {
-			cumulative[i] = cumulative[i - 1] + (int)hist.at<float>(i);
-		}
-
-		// Determine total number of pixels
-		int totalPixels = cumulative[histSize - 1];
-
-		// Determine the cutoff values
-		int lowerCutoff = int(double(totalPixels) * tailPercent);
-		int upperCutoff = int(double(totalPixels) * (1 - tailPercent));
-
-		// Find minValue
-		for (int i = 0; i < histSize; ++i) {
-			if (cumulative[i] > lowerCutoff) {
-				minValue = i;
-				break;
-			}
-		}
-
-		// Find maxValue
-		for (int i = histSize - 1; i >= 0; --i) {
-			if (cumulative[i] < upperCutoff) {
-				maxValue = i;
-				break;
-			}
-		}
-	}
-
-	// Function to apply gamma correction
-	void gammaCorrection(const std::vector<cv::Mat>& src, double gamma, ushort minValue, ushort maxValue)
-	{
-		Mat lut = buildGammaLut(gamma, minValue, maxValue);
-		const ushort* lut_data = lut.ptr<ushort>();
-
-		for (int nImage=0; nImage<src.size();nImage++)
-		{
-			Mat s(src[nImage]);
-
-			CV_Assert(!s.empty() );
-			CV_Assert(s.type() == CV_16UC1);
-
-			for (int y = 0; y < s.rows; ++y)
-			{
-				for (int x = 0; x < s.cols; ++x)
-				{
-					s.at<ushort>(y, x) = lut_data[s.at<ushort>(y, x)];
-				}
-			}
-		}
-	}
-
-	Mat buildGammaLut(double gamma, ushort minValue, ushort maxValue)
-	{
-		CV_Assert(gamma >= 0);
-		CV_Assert(minValue < maxValue);
-
-		// Calculate the scale and offset
-		double scale = 1.0 / (maxValue - minValue);
-		double offset = minValue;
-
-		// Create a look-up table
-		cv::Mat lut(1, 65536, CV_16UC1);
-		ushort* lut_data = lut.ptr<ushort>();
-
-		// gamma between minValue and maxValue and linear outside
-		for (int i = 0; i < 65536; ++i) {
-			if (i < minValue) {
-				lut_data[i] = i;
-			}
-			else if (i > maxValue) {
-				lut_data[i] = i;
-			}
-			else {
-				double normalized = (i - offset) * scale;
-				lut_data[i] = cv::saturate_cast<ushort>(pow(normalized, gamma) * (maxValue - minValue) + minValue);
-			}
-		}
-
-		return lut;
-	}
-
-};
-#pragma endregion
 
 //alpha blending comparison between src1 and src2 by GUI
-void compare(const string wname, const Mat& src1, const Mat& src2)
+void compare(const string wname, const cv::Mat& src1, const cv::Mat& src2)
 {
 	namedWindow(wname);
 	int a = 0; createTrackbar("alpha", wname, &a, 100);
 	int key = 0;
-	Mat show;
+	cv::Mat show;
 	double zoomLevel = 1;
 	while (key != 'q')
 	{
@@ -212,9 +61,9 @@ void compare(const string wname, const Mat& src1, const Mat& src2)
 			break;
 		}
 
-		Mat zoomedSrc1;
+		cv::Mat zoomedSrc1;
 		resize(src1, zoomedSrc1, Size(), zoomLevel, zoomLevel);
-		Mat zoomedSrc2;
+		cv::Mat zoomedSrc2;
 		resize(src2, zoomedSrc2, Size(), zoomLevel, zoomLevel);
 
 		addWeighted(zoomedSrc1, double(a) * 0.01, zoomedSrc2, double(100 - a) * 0.01, 0.0, show);
@@ -239,15 +88,15 @@ std::vector<std::string> getFolderFiles(const std::string& folder_path)
 
 
 #pragma region mseEnh
-static std::vector<Mat> mseEnhVolume(std::vector<Mat>& inputSlices, float sigmaMSE, const std::vector<float>& boostMSE, int levelMSE)
+static std::vector<cv::Mat> mseEnhVolume(std::vector<cv::Mat>& inputSlices, float sigmaMSE, const std::vector<float>& boostMSE, int levelMSE)
 {
 	// MSE filter
 	MSEGaussRemap mse;
 
-	std::vector<Mat> enhSlices;
+	std::vector<cv::Mat> enhSlices;
 	for (const auto& slice : inputSlices)
 	{
-		Mat filtered;
+		cv::Mat filtered;
 
 		mse.filter(slice, filtered, sigmaMSE, boostMSE, levelMSE);
 		enhSlices.push_back(filtered);
@@ -263,16 +112,16 @@ static int testMseEnhVolume(const std::string& inputFolder, const std::string& o
 	//load images
 	auto inputFiles = getFolderFiles(inputFolder);
 
-	std::vector<Mat> inputSlices;
+	std::vector<cv::Mat> inputSlices;
 	for (const auto& fn : inputFiles)
 		inputSlices.push_back(imread(fn, cv::IMREAD_GRAYSCALE | cv::IMREAD_ANYDEPTH));
 
 	//parameter setting
-	const float sigmaMSE = 100.f;	
+	const float sigmaMSE = 100.f;
 	const std::vector<float> boostMSE{ 1.f, 1.2f };
 	const int levelMSE = 6;
 
-	std::vector<Mat> enhSlices = mseEnhVolume(inputSlices, sigmaMSE, boostMSE, levelMSE);
+	std::vector<cv::Mat> enhSlices = mseEnhVolume(inputSlices, sigmaMSE, boostMSE, levelMSE);
 
 	if (std::filesystem::exists(outputFolder) && !std::filesystem::is_directory(outputFolder))
 		return -1;
@@ -289,12 +138,11 @@ static int testMseEnhVolume(const std::string& inputFolder, const std::string& o
 	return 0;
 }
 
-int testBilateral(std::string& inputFile, std::string& outputFile)
+int testBilateralDenoise(std::string& inputFile, std::string& outputFile)
 {
 	//load image
 	cv::Mat srcOriginal;
 	srcOriginal = imread(inputFile, cv::IMREAD_GRAYSCALE | cv::IMREAD_ANYDEPTH);
-
 
 	//parameter setting
 	const float sigmaRangeBilateral = 0.35f;
@@ -302,23 +150,53 @@ int testBilateral(std::string& inputFile, std::string& outputFile)
 	const int levelMSE = 2;
 	const int filterSize = 15;
 
-	Mat dn;
+	// VST
+	cv::Mat dn;
 	srcOriginal.convertTo(dn, CV_32F);
 	sqrt(dn, dn);
 
 	MSEBilateral mse;
-	Mat LaplacianLevels;
+	cv::Mat LaplacianLevels;
 
 	// MSE - gamma
 	mse.filter(dn, LaplacianLevels, sigmaRangeBilateral, sigmaSpaceBilateral, filterSize, levelMSE);
 
-	pow(LaplacianLevels, 2., LaplacianLevels );
+	// invert VST
+	pow(LaplacianLevels, 2., LaplacianLevels);
 	LaplacianLevels.convertTo(LaplacianLevels, CV_16U);
-	
+
 	cv::imwrite(outputFile, LaplacianLevels);
 
 	return 0;
 }
+
+
+static int testBilateralHPF(std::string& inputFile, std::string& outputFile)
+{
+	//load image
+	cv::Mat srcOriginal;
+	srcOriginal = imread(inputFile, cv::IMREAD_GRAYSCALE | cv::IMREAD_ANYDEPTH);
+
+	//parameter setting
+	const float sigmaRangeBilateral = 10.f;
+	const float sigmaSpaceBilateral = 3.f;
+	const int levelMSE = 4;
+	const int filterSize = 15;
+
+	cv::Mat dn;
+	srcOriginal.convertTo(dn, CV_32F);
+
+	MSEBilateral mse;
+	cv::Mat LaplacianLevels;
+
+	// MSE - gamma
+	mse.filterHPF(dn, LaplacianLevels, sigmaRangeBilateral, sigmaSpaceBilateral, filterSize, levelMSE);
+
+	cv::imwrite(outputFile, LaplacianLevels);
+
+	return 0;
+}
+
 
 int testMseAndGammaOrder(const std::string& inputFile, ushort maskThreshold)
 {
@@ -361,14 +239,14 @@ int testMseAndGammaOrder(const std::string& inputFile, ushort maskThreshold)
 
 	Mat gammaCorrectedMseFilter;
 	mse.filter(srcCopy, gammaCorrectedMseFilter, sigmaMSE, boostMSE, levelMSE);
-	
+
 	threshold(gammaCorrectedMseFilter, gammaCorrectedMseFilter, 0., 0., cv::ThresholdTypes::THRESH_TOZERO);
 	Mat gammaCorrectedMseFilterMasked{ Mat::zeros(gammaCorrectedMseFilter.size(), gammaCorrectedMseFilter.type()) };
 	gammaCorrectedMseFilter.copyTo(gammaCorrectedMseFilterMasked, anatomicMask);
 
 	cv::imwrite(".\\mseFilteredGammaCorrected.tif", mseFiltered);
 	cv::imwrite(".\\gammaCorrectedMseFilter.tif", gammaCorrectedMseFilterMasked);
-	
+
 	return 0;
 }
 
@@ -472,12 +350,12 @@ int testGammaVolume(const std::string& inputFolder, const std::string& outputFol
 	std::vector<Mat> sliceAnatomicMask;
 	std::vector<Mat> slices;
 	for (const auto& fn : inputFiles)
-	{ 
+	{
 		slices.push_back(imread(fn, cv::IMREAD_GRAYSCALE | cv::IMREAD_ANYDEPTH));
 
 		// create anatomic mask
 		cv::Mat anatomicMask;
-		cv::compare(slices[slices.size()-1], maskThreshold, anatomicMask, cv::CmpTypes::CMP_GT);
+		cv::compare(slices[slices.size() - 1], maskThreshold, anatomicMask, cv::CmpTypes::CMP_GT);
 		sliceAnatomicMask.push_back(anatomicMask);
 	}
 
@@ -495,8 +373,128 @@ int testGammaVolume(const std::string& inputFolder, const std::string& outputFol
 	return 0;
 }
 
+int testMSEBlend(std::string& inputFile1, std::string& inputFile2, std::string& inputFileMask, std::string& outputFile)
+{
+	MSEBlend blendFilter;
 
+	//load image
+	Mat src1 = imread(inputFile1, cv::IMREAD_GRAYSCALE | cv::IMREAD_ANYDEPTH);
+	Mat src2 = imread(inputFile2, cv::IMREAD_GRAYSCALE | cv::IMREAD_ANYDEPTH);
+	Mat mask = imread(inputFileMask, cv::IMREAD_GRAYSCALE | cv::IMREAD_ANYDEPTH);
+	Mat result;
+
+	const int levels = 4;
+	blendFilter.filter(src1, src2, mask, result, levels);
+
+	cv::imwrite(outputFile, result);
+
+	return 0;
+}
 #pragma endregion
+
+#pragma region MSEblend
+//
+//class MSEBlend
+//{
+//	// Function to build Gaussian pyramid
+//	void buildGaussianPyramid(const Mat& src, vector<Mat>& pyramid, int levels)
+//	{
+//		pyramid.push_back(src);
+//		Mat current = src;
+//		for (int i = 1; i < levels; ++i) {
+//			Mat down;
+//			pyrDown(current, down);
+//			pyramid.push_back(down);
+//			current = down;
+//		}
+//	}
+//
+//	// Function to build Laplacian pyramid
+//	void buildLaplacianPyramid(const vector<Mat>& gaussPyr, vector<Mat>& laplPyr)
+//	{
+//		for (size_t i = 0; i < gaussPyr.size() - 1; ++i) {
+//			Mat up;
+//			pyrUp(gaussPyr[i + 1], up, gaussPyr[i].size());
+//			Mat lap = gaussPyr[i] - up;
+//			laplPyr.push_back(lap);
+//		}
+//		laplPyr.push_back(gaussPyr.back()); // The smallest level is the same as in the Gaussian pyramid
+//	}
+//
+//	// Function to blend Laplacian pyramids
+//	vector<Mat> blendPyramids(const vector<Mat>& laplPyr1, const vector<Mat>& laplPyr2, const vector<Mat>& gaussPyrMask)
+//	{
+//		vector<Mat> blendedPyr;
+//		for (size_t i = 0; i < laplPyr1.size(); ++i) {
+//			Mat blended = laplPyr1[i].mul(gaussPyrMask[i]) + laplPyr2[i].mul(Scalar::all(1.0) - gaussPyrMask[i]);
+//			blendedPyr.push_back(blended);
+//		}
+//		return blendedPyr;
+//	}
+//
+//	// Function to reconstruct image from Laplacian pyramid
+//	Mat reconstructFromLaplacianPyramid(const vector<Mat>& laplPyr)
+//	{
+//		Mat current = laplPyr.back();
+//		for (size_t i = laplPyr.size() - 2; i < laplPyr.size(); --i) 
+//		{
+//			Mat up;
+//			pyrUp(current, up, laplPyr[i].size());
+//			current = up + laplPyr[i];
+//		}
+//		return current;
+//	}
+//
+//	int testMSEBlend()
+//	{
+//		std::string src1;
+//		std::string src2;
+//		std::string msk;
+//
+//		// Load the images
+//		Mat img1 = imread(src1, IMREAD_COLOR);
+//		Mat img2 = imread(src2, IMREAD_COLOR);
+//		Mat mask = imread(msk, IMREAD_GRAYSCALE);
+//
+//		if (img1.empty() || img2.empty() || mask.empty()) {
+//			return -1;
+//		}
+//
+//		if (img1.size() != img2.size() || img1.size() != mask.size()) {
+//			return -1;
+//		}
+//
+//		// Convert mask to float and normalize to [0, 1]
+//		mask.convertTo(mask, CV_32F, 1.0 / 255.0);
+//
+//		// Number of pyramid levels
+//		int levels = 6;
+//
+//		// Build Gaussian pyramids
+//		vector<Mat> gaussPyr1, gaussPyr2, gaussPyrMask;
+//		buildGaussianPyramid(img1, gaussPyr1, levels);
+//		buildGaussianPyramid(img2, gaussPyr2, levels);
+//		buildGaussianPyramid(mask, gaussPyrMask, levels);
+//
+//		// Build Laplacian pyramids
+//		vector<Mat> laplPyr1, laplPyr2;
+//		buildLaplacianPyramid(gaussPyr1, laplPyr1);
+//		buildLaplacianPyramid(gaussPyr2, laplPyr2);
+//
+//		// Blend Laplacian pyramids
+//		vector<Mat> blendedPyr = blendPyramids(laplPyr1, laplPyr2, gaussPyrMask);
+//
+//		// Reconstruct the blended image from the Laplacian pyramid
+//		Mat blendedImage = reconstructFromLaplacianPyramid(blendedPyr);
+//
+//		// Save and display the result
+//		imwrite("blended_image.png", blendedImage);
+//
+//		return 0;
+//	}
+//};
+#pragma endregion
+
 
 
 int main()
@@ -507,7 +505,11 @@ int main()
 	//std::string inputFile = ".\\s_0027.png";
 	std::string inputFile = "C:\\Users\\jack\\OneDrive - digitecinnovation.com\\imagesSamples\\png_reduced\\06_06.png";
 	std::string outputFile = ".\\s_0027_bilateral.png";
-	testBilateral(inputFile, outputFile);
+	testBilateralDenoise(inputFile, outputFile);
+
+	std::string inputFileVolSlide = "C:\\Users\\jack\\OneDrive - digitecinnovation.com\\imagesSamples\\slice_012_1.png";
+	std::string outputFileVolSlide = ".\\slice_012_1_bilateral.png";
+	testBilateralHPF(inputFileVolSlide, outputFileVolSlide);
 
 
 	// gamma
@@ -534,11 +536,11 @@ int main()
 		std::filesystem::create_directories(outputFolderGamma);
 
 	testGammaVolume(inputFolderGamma, outputFolderGamma, maskThreshold);
-	 
+
 	// gamma enh volume
 	std::string inputFolderGammaMSE = ".\\outSigma50MSE";
 	std::string outputFolderGammaMSE = ".\\outSigma50MSEGamma";
-	
+
 	if (!std::filesystem::exists(outputFolderGammaMSE))
 		std::filesystem::create_directories(outputFolderGammaMSE);
 

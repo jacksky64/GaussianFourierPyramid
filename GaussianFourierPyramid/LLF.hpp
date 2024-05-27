@@ -3,6 +3,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include <intrin.h>
+#include <vector>
 
 #pragma region pyramidUtility
 //image input version
@@ -45,6 +46,90 @@ static void collapseLaplacianPyramid(const std::vector<cv::Mat>& LaplacianPyrami
 }
 #pragma endregion
 
+
+#pragma region MSEblend
+class MSEBlend
+{
+private:
+
+	int get_simd_floor(const int val, const int simdwidth)
+	{
+		return (val / simdwidth) * simdwidth;
+	}
+
+	// Function to blend Laplacian pyramids
+	std::vector<cv::Mat> blendPyramids(const std::vector<cv::Mat>& laplPyr1, const std::vector<cv::Mat>& laplPyr2, const std::vector<cv::Mat>& gaussPyrMask)
+	{
+		std::vector<cv::Mat> blendedPyr;
+		for (size_t i = 0; i < laplPyr1.size(); ++i) 
+		{
+			cv::Mat blended = laplPyr1[i].mul(gaussPyrMask[i]) + laplPyr2[i].mul(cv::Scalar::all(1.0) - gaussPyrMask[i]);
+			blendedPyr.push_back(blended);
+		}
+		return blendedPyr;
+	}
+
+public:
+	void filter(const cv::Mat& src1, const cv::Mat& src2, const cv::Mat& mask, cv::Mat& dest, int level = 2)
+	{
+		CV_Assert(!src1.empty() && !src2.empty() && !mask.empty());
+
+		CV_Assert(src1.size() != src2.size() || src1.size() != mask.size());
+
+		if (dest.empty() || dest.size() != src1.size() || dest.type() != src1.type())
+			dest.create(src1.size(), src1.type());
+
+		std::vector<cv::Mat> GaussianPyramid1;	//level+1
+		std::vector<cv::Mat> GaussianPyramid2;	//level+1
+		std::vector<cv::Mat> GaussianPyramidMask;	//level+1
+		std::vector<cv::Mat> LaplacianPyramid1;	//level+1
+		std::vector<cv::Mat> LaplacianPyramid2;	//level+1
+
+		//(0) alloc
+		GaussianPyramid1.resize(level + 1);
+		GaussianPyramid2.resize(level + 1);
+		GaussianPyramidMask.resize(level + 1);
+
+		if (src1.depth() == CV_32F) 
+			src1.copyTo(GaussianPyramid1[0]);
+		else 
+			src1.convertTo(GaussianPyramid1[0], CV_32F);
+
+		if (src2.depth() == CV_32F) 
+			src2.copyTo(GaussianPyramid2[0]);
+		else 
+			src2.convertTo(GaussianPyramid2[0], CV_32F);
+
+		// Convert mask to float and normalize to [0, 1]
+		//mask.convertTo(mask, CV_32F, 1.0 / 255.0);
+		CV_Assert(mask.type() == CV_32F);
+
+		//(1) Build Gaussian Pyramid
+		cv::buildPyramid(GaussianPyramid1[0], GaussianPyramid1, level);
+		cv::buildPyramid(GaussianPyramid2[0], GaussianPyramid2, level);
+		cv::buildPyramid(GaussianPyramidMask[0], GaussianPyramidMask, level);
+
+		//(2-2) Build Laplacian Pyramids
+		buildLaplacianPyramid(GaussianPyramid1, LaplacianPyramid1, level);
+		buildLaplacianPyramid(GaussianPyramid2, LaplacianPyramid2, level);
+
+		//set last level
+		LaplacianPyramid1[level] = GaussianPyramid1[level];
+		LaplacianPyramid2[level] = GaussianPyramid2[level];
+
+		// Blend Laplacian pyramids
+		std::vector<cv::Mat> blendedPyr = blendPyramids(LaplacianPyramid1, LaplacianPyramid2, GaussianPyramidMask);
+
+		//(4) Collapse Laplacian Pyramid to the last level
+		collapseLaplacianPyramid(blendedPyr, blendedPyr[0]);
+
+		blendedPyr[0].convertTo(dest, src1.type());//convert 32F to output type
+	}
+};
+#pragma endregion
+
+
+
 #pragma region MSEbilateral
 class MSEBilateral
 {
@@ -52,16 +137,12 @@ private:
 	std::vector<cv::Mat> GaussianPyramid;////level+1
 	std::vector<cv::Mat> LaplacianPyramid;//level+1
 
-	float m_sigma_range = 0.f;
-	float m_sigma_space = 1.f;
-	int m_filterSize = 9;
-
 	int get_simd_floor(const int val, const int simdwidth)
 	{
 		return (val / simdwidth) * simdwidth;
 	}
 
-	void remap(const cv::Mat& src, cv::Mat& dest, const int filterSize, const float sigma_range, const float sigma_space)
+	void applyBilateral(const cv::Mat& src, cv::Mat& dest, const int filterSize, const float sigma_range, const float sigma_space)
 	{
 		cv::Mat r;
 		// filter doesn't work inplace
@@ -69,9 +150,10 @@ private:
 		r.copyTo(dest);
 	}
 
-	//main processing 
-	void body(const cv::Mat& src, cv::Mat& dest, const int level)
+public:
+	void filter(const cv::Mat& src, cv::Mat& dest, float sigma_range, float sigma_space, int filterSize, int level = 2)
 	{
+		//main processing 
 		dest.create(src.size(), src.type());
 		//(0) alloc
 		if (GaussianPyramid.size() != level + 1)GaussianPyramid.resize(level + 1);
@@ -88,7 +170,7 @@ private:
 		//(2) remap Laplacian Pyramids
 		for (int n = 0; n < level; n++)
 		{
-			remap(LaplacianPyramid[n], LaplacianPyramid[n], m_filterSize, m_sigma_range, m_sigma_space);
+			applyBilateral(LaplacianPyramid[n], LaplacianPyramid[n], filterSize, sigma_range, sigma_space);
 		}
 
 		//set last level
@@ -100,18 +182,40 @@ private:
 		LaplacianPyramid[0].convertTo(dest, src.type());//convert 32F to output type
 	}
 
-public:
-	void filter(const cv::Mat& src, cv::Mat& dest, float sigma_range, float sigma_space, int filterSize,  int level = 2)
+	void filterHPF(const cv::Mat& src, cv::Mat& destHF, float sigma_range, float sigma_space, int filterSize, int level = 2)
 	{
-		m_sigma_range = sigma_range;
-		m_sigma_space = sigma_space;
-		m_filterSize = filterSize;
+		//main processing 
+		destHF.create(src.size(), src.type());
+		//(0) alloc
+		if (GaussianPyramid.size() != level + 1)GaussianPyramid.resize(level + 1);
 
-		body(src, dest, level);
+		if (src.depth() == CV_32F) src.copyTo(GaussianPyramid[0]);
+		else src.convertTo(GaussianPyramid[0], CV_32F);
+
+		//(1) Build Gaussian Pyramid
+		cv::buildPyramid(GaussianPyramid[0], GaussianPyramid, level);
+
+		//(2-2) Build Laplacian Pyramids
+		buildLaplacianPyramid(GaussianPyramid, LaplacianPyramid, level);
+
+		//(2) remap Laplacian Pyramids
+		for (int n = 0; n < level; n++)
+		{
+			applyBilateral(LaplacianPyramid[n], LaplacianPyramid[n], filterSize, sigma_range, sigma_space);
+		}
+
+		//set last level
+		LaplacianPyramid[level].create( GaussianPyramid[level].size(), GaussianPyramid[level].type()) ;
+		LaplacianPyramid[level].setTo(0.);
+
+		//(4) Collapse Laplacian Pyramid to the last level
+		collapseLaplacianPyramid(LaplacianPyramid, LaplacianPyramid[0]);
+
+		LaplacianPyramid[0].convertTo(destHF, src.type());//convert 32F to output type
 	}
 };
-
 #pragma endregion
+
 
 #pragma region MSE
 class MSEGaussRemap
@@ -222,6 +326,7 @@ public:
 };
 
 #pragma endregion
+
 
 #pragma region LLF
 // Fast Local Laplacian Filter
@@ -699,3 +804,157 @@ public:
 	}
 };
 #pragma endregion
+
+
+#pragma region gammaEnh
+class gammaEnh
+{
+public:
+	void applyGamma(const cv::Mat& srcDest, const cv::Mat& mask, double gamma, double tailPercent = 0.001, double enlargeRangePerc = 0.1)
+	{
+		ushort minValue{ 0 };
+		ushort maxValue{ 0 };
+
+		std::vector<cv::Mat> s{ srcDest };
+		std::vector<cv::Mat> m{ mask };
+
+		findMinMax(s, m, minValue, maxValue, tailPercent);
+
+		// enlarge range
+		const double range{ double(maxValue) - double(minValue) };
+		const double rangeAdj{ range * enlargeRangePerc };
+
+		const double enlargedMinValue = std::max(0., double(minValue) - rangeAdj);
+		const double enlargedMaxValue = std::min(65535., double(maxValue) + rangeAdj);
+		const double enlargedRange{ enlargedMaxValue - enlargedMinValue };
+
+		gammaCorrection(s, gamma, ushort(enlargedMinValue), ushort(enlargedMaxValue));
+	}
+
+	void applyGamma(const std::vector<cv::Mat>& srcDest, const std::vector<cv::Mat>& mask, double gamma, double tailPercent = 0.001, double enlargeRangePerc = 0.1)
+	{
+		ushort minValue{ 0 };
+		ushort maxValue{ 0 };
+
+		findMinMax(srcDest, mask, minValue, maxValue, tailPercent);
+
+		// enlarge range
+		const double range{ double(maxValue) - double(minValue) };
+		const double rangeAdj{ range * enlargeRangePerc };
+
+		const double enlargedMinValue = std::max(0., double(minValue) - rangeAdj);
+		const double enlargedMaxValue = std::min(65535., double(maxValue) + rangeAdj);
+		const double enlargedRange{ enlargedMaxValue - enlargedMinValue };
+
+		gammaCorrection(srcDest, gamma, ushort(enlargedMinValue), ushort(enlargedMaxValue));
+	}
+
+private:
+	// Function to compute histogram and determine minValue and maxValue
+	void findMinMax(const std::vector<cv::Mat>& src, const std::vector<cv::Mat>& mask, ushort& minValue, ushort& maxValue, double tailPercent = 0.01)
+	{
+		CV_Assert(src.size() == mask.size());
+
+		// Calculate the histogram
+		const int histSize = 65536;
+		cv::Mat hist;
+		float range[] = { 0, 65536 };
+		const float* histRange = { range };
+		bool uniform = true, accumulate = true;
+
+		for (auto n = 0; n < src.size(); ++n)
+		{
+			auto s{ src.at(n) };
+			auto m{ mask.at(n) };
+			CV_Assert(s.type() == CV_16U);
+			CV_Assert(m.type() == CV_8U);
+			cv::calcHist(&s, 1, 0, m, hist, 1, &histSize, &histRange, uniform, accumulate);
+		}
+
+		// Calculate the cumulative histogram
+		std::vector<int> cumulative(histSize, 0);
+		cumulative[0] = (int)hist.at<float>(0);
+		for (int i = 1; i < histSize; ++i) {
+			cumulative[i] = cumulative[i - 1] + (int)hist.at<float>(i);
+		}
+
+		// Determine total number of pixels
+		int totalPixels = cumulative[histSize - 1];
+
+		// Determine the cutoff values
+		int lowerCutoff = int(double(totalPixels) * tailPercent);
+		int upperCutoff = int(double(totalPixels) * (1 - tailPercent));
+
+		// Find minValue
+		for (int i = 0; i < histSize; ++i) {
+			if (cumulative[i] > lowerCutoff) {
+				minValue = i;
+				break;
+			}
+		}
+
+		// Find maxValue
+		for (int i = histSize - 1; i >= 0; --i) {
+			if (cumulative[i] < upperCutoff) {
+				maxValue = i;
+				break;
+			}
+		}
+	}
+
+	// Function to apply gamma correction
+	void gammaCorrection(const std::vector<cv::Mat>& src, double gamma, ushort minValue, ushort maxValue)
+	{
+		cv::Mat lut = buildGammaLut(gamma, minValue, maxValue);
+		const ushort* lut_data = lut.ptr<ushort>();
+
+		for (int nImage = 0; nImage < src.size(); nImage++)
+		{
+			cv::Mat s(src[nImage]);
+
+			CV_Assert(!s.empty());
+			CV_Assert(s.type() == CV_16UC1);
+
+			for (int y = 0; y < s.rows; ++y)
+			{
+				for (int x = 0; x < s.cols; ++x)
+				{
+					s.at<ushort>(y, x) = lut_data[s.at<ushort>(y, x)];
+				}
+			}
+		}
+	}
+
+	cv::Mat buildGammaLut(double gamma, ushort minValue, ushort maxValue)
+	{
+		CV_Assert(gamma >= 0);
+		CV_Assert(minValue < maxValue);
+
+		// Calculate the scale and offset
+		double scale = 1.0 / (maxValue - minValue);
+		double offset = minValue;
+
+		// Create a look-up table
+		cv::Mat lut(1, 65536, CV_16UC1);
+		ushort* lut_data = lut.ptr<ushort>();
+
+		// gamma between minValue and maxValue and linear outside
+		for (int i = 0; i < 65536; ++i) {
+			if (i < minValue) {
+				lut_data[i] = i;
+			}
+			else if (i > maxValue) {
+				lut_data[i] = i;
+			}
+			else {
+				double normalized = (i - offset) * scale;
+				lut_data[i] = cv::saturate_cast<ushort>(pow(normalized, gamma) * (maxValue - minValue) + minValue);
+			}
+		}
+
+		return lut;
+	}
+
+};
+#pragma endregion
+
