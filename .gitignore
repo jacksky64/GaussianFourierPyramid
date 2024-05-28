@@ -351,3 +351,4 @@ MigrationBackup/
 *.tif
 *.png
 /GaussianFourierPyramid/SIRT_reduced
+/GaussianFourierPyramid/04/SIRT_reduced_NoDen/config
