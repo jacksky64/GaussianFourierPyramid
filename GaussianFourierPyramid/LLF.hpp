@@ -4,6 +4,7 @@
 
 #include <intrin.h>
 #include <vector>
+#include <algorithm>
 
 #pragma region pyramidUtility
 //image input version
@@ -151,8 +152,10 @@ private:
 	}
 
 public:
-	void filter(const cv::Mat& src, cv::Mat& dest, float sigma_range, float sigma_space, int filterSize, int level = 2)
+	void filter(const cv::Mat& src, cv::Mat& dest,  std::vector<float> sigma_range, float sigma_space, int filterSize, int level = 2)
 	{
+		CV_Assert(!sigma_range.empty());
+
 		//main processing 
 		dest.create(src.size(), src.type());
 		//(0) alloc
@@ -170,7 +173,7 @@ public:
 		//(2) remap Laplacian Pyramids
 		for (int n = 0; n < level; n++)
 		{
-			applyBilateral(LaplacianPyramid[n], LaplacianPyramid[n], filterSize, sigma_range, sigma_space);
+			applyBilateral(LaplacianPyramid[n], LaplacianPyramid[n], filterSize, sigma_range.at(std::min(size_t(n), sigma_range.size() - 1)), sigma_space);
 		}
 
 		//set last level
@@ -958,3 +961,227 @@ private:
 };
 #pragma endregion
 
+
+#pragma region sigmoidEnh
+class sigmoidEnh
+{
+public:
+	void apply(const cv::Mat& srcDest, const cv::Mat& mask, double sigma, double tailPercent = 0.001, double enlargeRangePerc = 0.1)
+	{
+		ushort minValue{ 0 };
+		ushort maxValue{ 0 };
+
+		std::vector<cv::Mat> s{ srcDest };
+		std::vector<cv::Mat> m{ mask };
+
+		findMinMax(s, m, minValue, maxValue, tailPercent);
+
+		// enlarge range
+		const double range{ double(maxValue) - double(minValue) };
+		const double rangeAdj{ range * enlargeRangePerc };
+
+		const double enlargedMinValue = std::max(0., double(minValue) - rangeAdj);
+		const double enlargedMaxValue = std::min(65535., double(maxValue) + rangeAdj);
+		const double enlargedRange{ enlargedMaxValue - enlargedMinValue };
+
+		doLut(s, sigma, ushort(enlargedMinValue), ushort(enlargedMaxValue));
+	}
+
+	void apply(const std::vector<cv::Mat>& srcDest, const std::vector<cv::Mat>& mask, double sigma, double tailPercent = 0.001, double enlargeRangePerc = 0.1)
+	{
+		ushort minValue{ 0 };
+		ushort maxValue{ 0 };
+
+		findMinMax(srcDest, mask, minValue, maxValue, tailPercent);
+
+		// enlarge range
+		const double range{ double(maxValue) - double(minValue) };
+		const double rangeAdj{ range * enlargeRangePerc };
+
+		const double enlargedMinValue = std::max(0., double(minValue) - rangeAdj);
+		const double enlargedMaxValue = std::min(65535., double(maxValue) + rangeAdj);
+		const double enlargedRange{ enlargedMaxValue - enlargedMinValue };
+
+		doLut(srcDest, sigma, ushort(enlargedMinValue), ushort(enlargedMaxValue));
+	}
+
+private:
+	// Function to compute histogram and determine minValue and maxValue
+	void findMinMax(const std::vector<cv::Mat>& src, const std::vector<cv::Mat>& mask, ushort& minValue, ushort& maxValue, double tailPercent = 0.01)
+	{
+		CV_Assert(src.size() == mask.size());
+
+		// Calculate the histogram
+		const int histSize = 65536;
+		cv::Mat hist;
+		float range[] = { 0, 65536 };
+		const float* histRange = { range };
+		bool uniform = true, accumulate = true;
+
+		for (auto n = 0; n < src.size(); ++n)
+		{
+			auto s{ src.at(n) };
+			auto m{ mask.at(n) };
+			CV_Assert(s.type() == CV_16U);
+			CV_Assert(m.type() == CV_8U);
+			cv::calcHist(&s, 1, 0, m, hist, 1, &histSize, &histRange, uniform, accumulate);
+		}
+
+		// Calculate the cumulative histogram
+		std::vector<int> cumulative(histSize, 0);
+		cumulative[0] = (int)hist.at<float>(0);
+		for (int i = 1; i < histSize; ++i) {
+			cumulative[i] = cumulative[i - 1] + (int)hist.at<float>(i);
+		}
+
+		// Determine total number of pixels
+		int totalPixels = cumulative[histSize - 1];
+
+		// Determine the cutoff values
+		int lowerCutoff = int(double(totalPixels) * tailPercent);
+		int upperCutoff = int(double(totalPixels) * (1 - tailPercent));
+
+		// Find minValue
+		for (int i = 0; i < histSize; ++i) {
+			if (cumulative[i] > lowerCutoff) {
+				minValue = i;
+				break;
+			}
+		}
+
+		// Find maxValue
+		for (int i = histSize - 1; i >= 0; --i) {
+			if (cumulative[i] < upperCutoff) {
+				maxValue = i;
+				break;
+			}
+		}
+	}
+
+	// Function to apply gamma correction
+	void doLut(const std::vector<cv::Mat>& src, double sigma, ushort minValue, ushort maxValue)
+	{
+		cv::Mat lut = lutBuild(sigma, minValue, maxValue);
+		const ushort* lut_data = lut.ptr<ushort>();
+
+		for (int nImage = 0; nImage < src.size(); nImage++)
+		{
+			cv::Mat s(src[nImage]);
+
+			CV_Assert(!s.empty());
+			CV_Assert(s.type() == CV_16UC1);
+
+			for (int y = 0; y < s.rows; ++y)
+			{
+				for (int x = 0; x < s.cols; ++x)
+				{
+					s.at<ushort>(y, x) = lut_data[s.at<ushort>(y, x)];
+				}
+			}
+		}
+	}
+
+	cv::Mat lutBuild(double sigma, ushort minValue, ushort maxValue)
+	{
+		CV_Assert(sigma >= 0);
+		CV_Assert(minValue < maxValue);
+
+		// Calculate the scale and offset
+		float scale = 1.0f / float (maxValue - minValue);
+		float offset = minValue;
+		
+
+		// Create a look-up table
+		cv::Mat lut(1, 65536, CV_16UC1);
+		ushort* lut_data = lut.ptr<ushort>();
+
+		// gamma between minValue and maxValue and linear outside
+		for (int i = 0; i < 65536; ++i) 
+		{
+			if (i < minValue) {
+				lut_data[i] = i;
+			}
+			else if (i > maxValue) 
+			{
+				lut_data[i] = i;
+			}
+			else 
+			{
+				const float normalized = (i - offset) * scale - 0.5f;
+				lut_data[i] = cv::saturate_cast<ushort>(
+					( 1.f / ( 1.f + std::expf( -normalized / float(sigma)))) * float((maxValue - minValue)) + float(minValue));
+			}
+		}
+
+		return lut;
+	}
+
+};
+#pragma endregion
+
+#pragma region projDenoise
+
+class projDenoise
+{
+public:	
+	void apply(std::vector<cv::Mat>& srcDest, const cv::Mat& flatProjection, int flatBorder = 200, float sigmaSpace= 0.7f, int filterSize=5, int level = 3)
+	{
+		cv::Mat flatVST;
+		flatProjection.convertTo(flatVST, CV_32F);
+		cv::sqrt(flatVST, flatVST);
+
+		std::vector<float> sigmaRange = noiseEstimate(flatVST, flatBorder, level);
+
+		MSEBilateral bFilter;
+		
+		for (auto& m : srcDest)
+		{
+			cv::Mat vst;
+			m.convertTo(vst, CV_32F);
+			cv::sqrt(vst, vst);
+
+			bFilter.filter(vst, vst, sigmaRange, sigmaSpace, filterSize, level);
+
+			cv::pow(vst, 2., vst);
+			vst.convertTo(m, m.type());
+		}
+	}
+
+private:
+	std::vector<float> noiseEstimate(const cv::Mat & src, int border,  int level)
+	{
+		std::vector<cv::Mat> destPyramid;
+		cv::Mat reduced(src.rowRange(border, src.rows - border).colRange(border, src.cols - border));
+		CV_Assert(reduced.total() > 0);
+
+		buildLaplacianPyramid(reduced, destPyramid, level);
+
+		std::vector<float> noiseSigma;
+		for (const auto& m : destPyramid)
+		{
+			cv::Size kSize( 11,11 );
+
+			cv::Mat mean;
+			cv::Mat sqMean;
+			cv::pow(m, 2., sqMean);
+
+			cv::boxFilter(m, mean, -1, kSize, cv::Point(-1, -1), true);
+			cv::pow(mean, 2., mean);
+			cv::boxFilter(sqMean, sqMean, -1, kSize, cv::Point(-1, -1), true);
+			
+			mean = sqMean - mean;
+			
+			cv::Mat meanWoBorder(mean.rowRange(kSize.height, mean.rows - kSize.height).colRange(kSize.width, mean.cols - kSize.width));
+			cv::sqrt(meanWoBorder, meanWoBorder);
+
+			cv::Scalar meanValue;
+			cv::Scalar stdDevValue;
+			cv::meanStdDev(meanWoBorder, meanValue, stdDevValue);
+
+			noiseSigma.push_back(float(meanValue[0]));
+		}
+
+		return noiseSigma;
+	}
+};
+#pragma endregion

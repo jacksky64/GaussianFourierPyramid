@@ -159,7 +159,7 @@ int testBilateralDenoise(std::string& inputFile, std::string& outputFile)
 	cv::Mat LaplacianLevels;
 
 	// MSE - gamma
-	mse.filter(dn, LaplacianLevels, sigmaRangeBilateral, sigmaSpaceBilateral, filterSize, levelMSE);
+	mse.filter(dn, LaplacianLevels, std::vector<float> {sigmaRangeBilateral},sigmaSpaceBilateral, filterSize, levelMSE);
 
 	// invert VST
 	pow(LaplacianLevels, 2., LaplacianLevels);
@@ -170,6 +170,41 @@ int testBilateralDenoise(std::string& inputFile, std::string& outputFile)
 	return 0;
 }
 
+int testprojDenoise(const std::string& inputFolder, const std::string& inputFileFlat, const std::string& outputFolder)
+{
+	//load image
+	cv::Mat flat;
+	flat = imread(inputFileFlat, cv::IMREAD_GRAYSCALE | cv::IMREAD_ANYDEPTH);
+
+	//parameter setting
+	const float sigmaSpace = 0.7f;
+	const int levels = 4;
+	const int filterSize = 5;
+
+	projDenoise projFilter;
+
+	//load images
+	auto inputFiles = getFolderFiles(inputFolder);
+
+	std::vector<Mat> slices;
+	for (const auto& fn : inputFiles)
+	{
+		slices.push_back(imread(fn, cv::IMREAD_GRAYSCALE | cv::IMREAD_ANYDEPTH));
+	}
+	const int flatBorder{ 200 };
+	projFilter.apply(slices, flat, flatBorder, sigmaSpace, filterSize, levels);
+
+	for (auto n = 0; n < slices.size(); ++n)
+	{
+		std::filesystem::path p{ outputFolder };
+		std::filesystem::path fn{ inputFiles[n] };
+		p /= fn.filename();
+		p.replace_extension("png");
+		cv::imwrite(p.string(), slices[n]);
+	}
+
+	return 0;
+}
 
 static int testBilateralHPF(std::string& inputFile, std::string& outputFile)
 {
@@ -197,6 +232,61 @@ static int testBilateralHPF(std::string& inputFile, std::string& outputFile)
 	return 0;
 }
 
+static int test2DSynth(std::string& inputFile, std::string& outputFile, double maskThreshold)
+{
+	//load image
+	cv::Mat srcOriginal;
+	srcOriginal = imread(inputFile, cv::IMREAD_GRAYSCALE | cv::IMREAD_ANYDEPTH);
+
+	// mask
+	cv::Mat anatomicMask;
+	cv::compare(srcOriginal, maskThreshold, anatomicMask, cv::CmpTypes::CMP_GT);
+
+	//parameter setting
+	const float sigmaRangeBilateral = 5.f;
+	const float sigmaSpaceBilateral = 3.f;
+	const int levelBilateralMSE = 1;
+	const int filterSize = 15;
+
+	cv::Mat dn;
+	srcOriginal.convertTo(dn, CV_32F);
+
+	// bilateral
+	MSEBilateral bilateralFilter;
+	cv::Mat bilateralEnh;
+	bilateralFilter.filter(dn, bilateralEnh, std::vector<float> {sigmaRangeBilateral}, sigmaSpaceBilateral, filterSize, levelBilateralMSE);
+	
+
+	//parameter setting
+	// MSE - gauss enh
+	MSEGaussRemap mse;
+	
+	const float sigmaMSE = 100.f;
+	const std::vector<float> boostMSE{ 1.f,3.f };
+	const int levelMSE = 6;
+
+	cv::Mat mseEnh;
+	mse.filter(bilateralEnh, mseEnh, sigmaMSE, boostMSE, levelMSE);
+	threshold(mseEnh, mseEnh, 0., 0., cv::ThresholdTypes::THRESH_TOZERO);
+
+	cv::Mat mseEnh_16u;
+	mseEnh.convertTo(mseEnh_16u, CV_16U);
+
+	// gamma
+	gammaEnh gammaFilter;
+	double gamma{ 4. }, tailPercent{ 0.001 }, enlargeRangePerc{ 0.1 };
+
+	cv::Mat gammaOut_16u;
+	mseEnh_16u.copyTo(gammaOut_16u);
+	std::vector<cv::Mat> inputImages{ gammaOut_16u };
+	std::vector<cv::Mat> inputMasks{ anatomicMask };
+
+	gammaFilter.applyGamma(inputImages, inputMasks, gamma, tailPercent, enlargeRangePerc);
+	
+	cv::imwrite(outputFile, gammaOut_16u);
+
+	return 0;
+}
 
 int testMseAndGammaOrder(const std::string& inputFile, ushort maskThreshold)
 {
@@ -373,6 +463,65 @@ int testGammaVolume(const std::string& inputFolder, const std::string& outputFol
 	return 0;
 }
 
+int testSigmoid(std::string& inputFile, std::string& outputFile, ushort maskThreshold)
+{
+	double tailPercent = 0.001;
+	double enlargeRangePerc = 0.1;
+	double gamma{ 0.15 };
+
+	sigmoidEnh sigmoidFilter;
+
+	//load image
+	Mat src = imread(inputFile, cv::IMREAD_GRAYSCALE | cv::IMREAD_ANYDEPTH);
+
+	// anatomic mask
+	cv::Mat anatomicMask;
+	cv::compare(src, maskThreshold, anatomicMask, cv::CmpTypes::CMP_GT);
+
+	sigmoidFilter.apply(src, anatomicMask, gamma, tailPercent, enlargeRangePerc);
+
+	cv::imwrite(outputFile, src);
+
+	return 0;
+}
+
+int testSigmoidVolume(const std::string& inputFolder, const std::string& outputFolder, ushort maskThreshold)
+{
+	double tailPercent = 0.001;
+	double enlargeRangePerc = 0.1;
+	double sigma{ 0.15 };
+
+	sigmoidEnh sigmoidFilter;
+
+	//load images
+	auto inputFiles = getFolderFiles(inputFolder);
+
+	std::vector<Mat> sliceAnatomicMask;
+	std::vector<Mat> slices;
+	for (const auto& fn : inputFiles)
+	{
+		slices.push_back(imread(fn, cv::IMREAD_GRAYSCALE | cv::IMREAD_ANYDEPTH));
+
+		// create anatomic mask
+		cv::Mat anatomicMask;
+		cv::compare(slices[slices.size() - 1], maskThreshold, anatomicMask, cv::CmpTypes::CMP_GT);
+		sliceAnatomicMask.push_back(anatomicMask);
+	}
+
+	sigmoidFilter.apply(slices, sliceAnatomicMask, sigma, tailPercent, enlargeRangePerc);
+
+	for (auto n = 0; n < slices.size(); ++n)
+	{
+		std::filesystem::path p{ outputFolder };
+		std::filesystem::path fn{ inputFiles[n] };
+		p /= fn.filename();
+		p.replace_extension("tif");
+		cv::imwrite(p.string(), slices[n]);
+	}
+
+	return 0;
+}
+
 int testMSEBlend(std::string& inputFile1, std::string& inputFile2, std::string& inputFileMask, std::string& outputFile)
 {
 	MSEBlend blendFilter;
@@ -390,6 +539,7 @@ int testMSEBlend(std::string& inputFile1, std::string& inputFile2, std::string& 
 
 	return 0;
 }
+
 #pragma endregion
 
 #pragma region MSEblend
@@ -497,9 +647,47 @@ int testMSEBlend(std::string& inputFile1, std::string& inputFile2, std::string& 
 
 
 
+
 int main()
 {
 	const ushort maskThreshold{ 500 };
+
+	std::string inputFolderDenoise = "E:\\soliddetectorimages\\TomoImages\\20240105 Metaltronica\\data\\01\\png_reduced";
+	std::string inputFlat = "E:\\soliddetectorimages\\TomoImages\\20240105 Metaltronica\\Flat_field\\29kVp-55mAs\\png_reduced\\07.png";
+	std::string outputFolderDenoise = ".\\outDenoise";
+
+	if (!std::filesystem::exists(outputFolderDenoise))
+		std::filesystem::create_directories(outputFolderDenoise);
+
+	testprojDenoise(inputFolderDenoise, inputFlat, outputFolderDenoise);
+
+	
+
+	// mse enh volume
+	//std::string inputFolder = "C:\\Users\\jack\\OneDrive - digitecinnovation.com\\imagesSamples\\slice 08\\slices";
+	std::string inputFolder1 = "E:\\temp\\GaussianFourierPyramid\\GaussianFourierPyramid\\04\\SIRT_reduced_NoDen\\slices";
+	std::string outputFolder1 = ".\\outSigma04";
+
+	if (!std::filesystem::exists(outputFolder1))
+		std::filesystem::create_directories(outputFolder1);
+
+	testMseEnhVolume(inputFolder1, outputFolder1);
+
+	// gamma enh volume
+	std::string inputFolderGamma1 = ".\\outSigma04";
+	std::string outputFolderGamma1 = ".\\outSigma04Gamma";
+
+	if (!std::filesystem::exists(outputFolderGamma1))
+		std::filesystem::create_directories(outputFolderGamma1);
+
+	testSigmoidVolume(inputFolderGamma1, outputFolderGamma1, maskThreshold);
+
+
+	// bilateral MSE
+	//std::string inputFile = ".\\s_0027.png";
+	std::string inputFile2D = "C:\\Users\\jack\\OneDrive - digitecinnovation.com\\imagesSamples\\synthetic_proj_muTau-exm-1-proj_7.tif";
+	std::string outputFile2D = ".\\synthetic_proj_muTau-exm-1-proj_7_enh.tif";
+	test2DSynth(inputFile2D, outputFile2D, double(maskThreshold));
 
 	// bilateral MSE
 	//std::string inputFile = ".\\s_0027.png";
@@ -507,8 +695,8 @@ int main()
 	std::string outputFile = ".\\s_0027_bilateral.png";
 	testBilateralDenoise(inputFile, outputFile);
 
-	std::string inputFileVolSlide = "C:\\Users\\jack\\OneDrive - digitecinnovation.com\\imagesSamples\\slice_012_1.png";
-	std::string outputFileVolSlide = ".\\slice_012_1_bilateral.png";
+	std::string inputFileVolSlide = "C:\\Users\\jack\\OneDrive - digitecinnovation.com\\imagesSamples\\synthetic_proj_muTau-exm-8-proj_7.png";
+	std::string outputFileVolSlide = ".\\synthetic_proj_muTau-exm-8-proj_7.tif";
 	testBilateralHPF(inputFileVolSlide, outputFileVolSlide);
 
 
@@ -519,8 +707,9 @@ int main()
 
 
 	// mse enh volume
-	std::string inputFolder = "C:\\Users\\jack\\OneDrive - digitecinnovation.com\\imagesSamples\\slice 08\\slices";
-	std::string outputFolder = ".\\outSigma50MSE";
+	//std::string inputFolder = "C:\\Users\\jack\\OneDrive - digitecinnovation.com\\imagesSamples\\slice 08\\slices";
+	std::string inputFolder = "E:\\temp\\GaussianFourierPyramid\\GaussianFourierPyramid\\04\\SIRT_reduced_NoDen\\slices";
+	std::string outputFolder = ".\\outSigma04";
 
 	if (!std::filesystem::exists(outputFolder))
 		std::filesystem::create_directories(outputFolder);
