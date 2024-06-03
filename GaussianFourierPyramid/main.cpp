@@ -540,117 +540,35 @@ int testMSEBlend(std::string& inputFile1, std::string& inputFile2, std::string& 
 	return 0;
 }
 
-#pragma endregion
+int testLR(std::string& inputFile, std::string& outputFile)
+{
+	MSEGaussRemap filter;
 
-#pragma region MSEblend
-//
-//class MSEBlend
-//{
-//	// Function to build Gaussian pyramid
-//	void buildGaussianPyramid(const Mat& src, vector<Mat>& pyramid, int levels)
-//	{
-//		pyramid.push_back(src);
-//		Mat current = src;
-//		for (int i = 1; i < levels; ++i) {
-//			Mat down;
-//			pyrDown(current, down);
-//			pyramid.push_back(down);
-//			current = down;
-//		}
-//	}
-//
-//	// Function to build Laplacian pyramid
-//	void buildLaplacianPyramid(const vector<Mat>& gaussPyr, vector<Mat>& laplPyr)
-//	{
-//		for (size_t i = 0; i < gaussPyr.size() - 1; ++i) {
-//			Mat up;
-//			pyrUp(gaussPyr[i + 1], up, gaussPyr[i].size());
-//			Mat lap = gaussPyr[i] - up;
-//			laplPyr.push_back(lap);
-//		}
-//		laplPyr.push_back(gaussPyr.back()); // The smallest level is the same as in the Gaussian pyramid
-//	}
-//
-//	// Function to blend Laplacian pyramids
-//	vector<Mat> blendPyramids(const vector<Mat>& laplPyr1, const vector<Mat>& laplPyr2, const vector<Mat>& gaussPyrMask)
-//	{
-//		vector<Mat> blendedPyr;
-//		for (size_t i = 0; i < laplPyr1.size(); ++i) {
-//			Mat blended = laplPyr1[i].mul(gaussPyrMask[i]) + laplPyr2[i].mul(Scalar::all(1.0) - gaussPyrMask[i]);
-//			blendedPyr.push_back(blended);
-//		}
-//		return blendedPyr;
-//	}
-//
-//	// Function to reconstruct image from Laplacian pyramid
-//	Mat reconstructFromLaplacianPyramid(const vector<Mat>& laplPyr)
-//	{
-//		Mat current = laplPyr.back();
-//		for (size_t i = laplPyr.size() - 2; i < laplPyr.size(); --i) 
-//		{
-//			Mat up;
-//			pyrUp(current, up, laplPyr[i].size());
-//			current = up + laplPyr[i];
-//		}
-//		return current;
-//	}
-//
-//	int testMSEBlend()
-//	{
-//		std::string src1;
-//		std::string src2;
-//		std::string msk;
-//
-//		// Load the images
-//		Mat img1 = imread(src1, IMREAD_COLOR);
-//		Mat img2 = imread(src2, IMREAD_COLOR);
-//		Mat mask = imread(msk, IMREAD_GRAYSCALE);
-//
-//		if (img1.empty() || img2.empty() || mask.empty()) {
-//			return -1;
-//		}
-//
-//		if (img1.size() != img2.size() || img1.size() != mask.size()) {
-//			return -1;
-//		}
-//
-//		// Convert mask to float and normalize to [0, 1]
-//		mask.convertTo(mask, CV_32F, 1.0 / 255.0);
-//
-//		// Number of pyramid levels
-//		int levels = 6;
-//
-//		// Build Gaussian pyramids
-//		vector<Mat> gaussPyr1, gaussPyr2, gaussPyrMask;
-//		buildGaussianPyramid(img1, gaussPyr1, levels);
-//		buildGaussianPyramid(img2, gaussPyr2, levels);
-//		buildGaussianPyramid(mask, gaussPyrMask, levels);
-//
-//		// Build Laplacian pyramids
-//		vector<Mat> laplPyr1, laplPyr2;
-//		buildLaplacianPyramid(gaussPyr1, laplPyr1);
-//		buildLaplacianPyramid(gaussPyr2, laplPyr2);
-//
-//		// Blend Laplacian pyramids
-//		vector<Mat> blendedPyr = blendPyramids(laplPyr1, laplPyr2, gaussPyrMask);
-//
-//		// Reconstruct the blended image from the Laplacian pyramid
-//		Mat blendedImage = reconstructFromLaplacianPyramid(blendedPyr);
-//
-//		// Save and display the result
-//		imwrite("blended_image.png", blendedImage);
-//
-//		return 0;
-//	}
-//};
-#pragma endregion
+	//load image
+	Mat src = imread(inputFile, cv::IMREAD_GRAYSCALE | cv::IMREAD_ANYDEPTH);
+	Mat result;
 
+	const int levels = 9;
+	const float sigmaSpace{ 100 };
+	filter.filter(src, result, sigmaSpace, std::vector<float>{0.,0.,0., 0., 0., 0., 0., -0.8, -0.9}, levels);
+
+	cv::imwrite(outputFile, result);
+
+	return 0;
+}
+
+#pragma endregion
 
 
 
 int main()
 {
 	const ushort maskThreshold{ 500 };
+
+	std::string inputLR = "\\\\dgtnas\\AImages\\Tomosynthesis\\output\\20240105 Metaltronica\\__28-05-2024_Issue_49344\\05\\SIRT_reduced\\Synth2DProjection.png";
+	std::string outputLR = ".\\outLR.tif";
+	testLR(inputLR,outputLR);
+
 
 	std::string inputFolderDenoise = "E:\\soliddetectorimages\\TomoImages\\20240105 Metaltronica\\data\\01\\png_reduced";
 	std::string inputFlat = "E:\\soliddetectorimages\\TomoImages\\20240105 Metaltronica\\Flat_field\\29kVp-55mAs\\png_reduced\\07.png";
