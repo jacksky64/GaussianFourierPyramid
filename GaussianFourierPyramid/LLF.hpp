@@ -319,7 +319,9 @@ public:
 		}
 
 		//set last level
-		LaplacianPyramid[level] = GaussianPyramid[level];
+		LaplacianPyramid[level].create(GaussianPyramid[level].size(), GaussianPyramid[level].type());
+		LaplacianPyramid[level].setTo(0.f);
+		//LaplacianPyramid[level] = GaussianPyramid[level];
 
 		//(4) Collapse Laplacian Pyramid to the last level
 		collapseLaplacianPyramid(LaplacianPyramid, LaplacianPyramid[0]);
