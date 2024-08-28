@@ -1,6 +1,7 @@
 #pragma once
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/highgui.hpp>
 
 #include <intrin.h>
 #include <vector>
@@ -45,8 +46,140 @@ static void collapseLaplacianPyramid(const std::vector<cv::Mat>& LaplacianPyrami
 	}
 	cv::add(ret, LaplacianPyramid[0], dest);
 }
+
+
 #pragma endregion
 
+class MSEWeightedBlend
+{
+private:
+	int get_simd_floor(const int val, const int simdwidth)
+	{
+		return (val / simdwidth) * simdwidth;
+	}
+
+	void wheightedCollapsePyramid(const std::vector<cv::Mat>& laplPyrMIP,
+		const std::vector<cv::Mat>& gaussPyrMIP,
+		const std::vector<cv::Mat>& laplPyrAvg,
+		const std::vector<cv::Mat>& gaussPyrAvg,
+		cv::Mat& dest)
+	{
+		const int level = (int)laplPyrAvg.size();
+		std::vector<cv::Mat> restoredNorm;
+		cv::Mat ret;
+
+		cv::pyrUp(gaussPyrAvg[level - 1], ret, laplPyrAvg[level - 2].size());
+		restoredNorm.push_back(ret.clone());
+		for (int i = level - 2; i != 0; i--)
+		{
+			cv::add(ret, laplPyrAvg[i], ret);
+			cv::pyrUp(ret, ret, laplPyrAvg[i - 1].size());
+			restoredNorm.push_back(ret.clone());
+		}
+		cv::Mat dest0;
+		cv::add(ret, laplPyrAvg[0], dest0);
+		restoredNorm.push_back(dest0.clone());
+
+		std::vector<double> power{ 0.0, 0.0, 0.0 ,0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+		std::vector<double> alpha{ 1.0, 1.0, 1.0, 1.0, 1.0, 0.5, 0.5 , 1.0, 0.2 };
+		std::vector<double> beta { 1., 1., 1., 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
+
+		cv::Mat vMask;
+		cv::threshold(gaussPyrAvg[level - 1], vMask, 10., 1., cv::ThresholdTypes::THRESH_BINARY);
+
+		//const double maxRange{ cv::mean(GaussianPyramid[level - 1], vMask>0)[0]};
+
+		const double maxRange = 50;
+		//std::vector<double> power{ 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0 };
+		//std::vector<double> alpha{ 1.0, 1.0, 1.0, 1.0, 1.0, 0.4, 0.2, 0.2, 0.2 };
+		//std::vector<double> beta{ 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
+
+		std::vector<cv::Mat> restoredPost;
+
+		// blend LPF from gaussian pyr
+		cv::Mat blended;
+		const double blendGaussAvg = 0.5;
+		const double blendGaussMIP = 0;
+		const double alphaBlendLapl = 0.3;
+
+		cv::addWeighted(gaussPyrAvg[level - 1], blendGaussAvg, gaussPyrMIP[level - 1], blendGaussMIP, 0., blended);
+		cv::pyrUp(blended, ret, laplPyrAvg[level - 2].size());
+
+		restoredPost.push_back(ret.clone());
+
+		for (int i = level - 2; i >= 0; i--)
+		{
+			cv::Mat gain{ gaussPyrAvg[i].clone() };
+			cv::divide(gain, cv::Scalar(maxRange), gain);
+			cv::pow(gain, power.at(i), gain);
+
+			cv::addWeighted(laplPyrAvg[i], alphaBlendLapl, laplPyrMIP[i], 1. - alphaBlendLapl, 0., blended);
+
+			cv::multiply(gain, blended, blended, beta.at(i));
+			cv::multiply(ret, alpha.at(i), ret);
+			cv::add(ret, blended, ret);
+
+			if (i > 0)
+				cv::pyrUp(ret, ret, laplPyrAvg[i - 1].size());
+
+			restoredPost.push_back(ret.clone());
+		}
+		ret.copyTo(dest);
+	}
+
+public:
+	void filter(const cv::Mat& srcLPF, const cv::Mat& srcHPF, const cv::Mat& mask, cv::Mat& dest, int level = 2)
+	{
+		CV_Assert(!srcLPF.empty() && !srcHPF.empty() && !mask.empty());
+
+		CV_Assert((srcLPF.size() == srcHPF.size()) && (srcLPF.size() == mask.size()));
+
+		if (dest.empty() || dest.size() != srcLPF.size() || dest.type() != srcLPF.type())
+			dest.create(srcLPF.size(), srcLPF.type());
+
+		std::vector<cv::Mat> gaussPyrLPF;    // level+1
+		std::vector<cv::Mat> gaussPyrHPF;    // level+1
+		std::vector<cv::Mat> gaussPyrMask; // level+1
+		std::vector<cv::Mat> laplacianPyrLPF;   // level+1
+		std::vector<cv::Mat> laplacianPyrHPF;   // level+1
+
+		gaussPyrLPF.resize(level + 1);
+		gaussPyrHPF.resize(level + 1);
+		gaussPyrMask.resize(level + 1);
+
+		if (srcLPF.depth() == CV_32F)
+			srcLPF.copyTo(gaussPyrLPF[0]);
+		else
+			srcLPF.convertTo(gaussPyrLPF[0], CV_32F);
+
+		if (srcHPF.depth() == CV_32F)
+			srcHPF.copyTo(gaussPyrHPF[0]);
+		else
+			srcHPF.convertTo(gaussPyrHPF[0], CV_32F);
+
+		if (mask.depth() == CV_32F)
+			mask.copyTo(gaussPyrMask[0]);
+		else
+			mask.convertTo(gaussPyrMask[0], CV_32F);
+
+		cv::normalize(gaussPyrMask[0], gaussPyrMask[0], 1, 0, cv::NormTypes::NORM_MINMAX, CV_32F);
+
+		// Build Gaussian Pyramid
+		cv::buildPyramid(gaussPyrLPF[0], gaussPyrLPF, level);
+		cv::buildPyramid(gaussPyrHPF[0], gaussPyrHPF, level);
+		cv::buildPyramid(gaussPyrMask[0], gaussPyrMask, level);
+
+		// Build Laplacian Pyramids
+		buildLaplacianPyramid(gaussPyrLPF, laplacianPyrLPF, level);
+		buildLaplacianPyramid(gaussPyrHPF, laplacianPyrHPF, level);
+
+		// Collapse Pyramids
+		cv::Mat r;
+		wheightedCollapsePyramid(laplacianPyrHPF, gaussPyrHPF, laplacianPyrLPF, gaussPyrLPF, r);
+
+		r.convertTo(dest, srcLPF.type()); // convert 32F to output type
+	}
+};
 
 #pragma region MSEblend
 class MSEBlend
@@ -62,7 +195,7 @@ private:
 	std::vector<cv::Mat> blendPyramids(const std::vector<cv::Mat>& laplPyr1, const std::vector<cv::Mat>& laplPyr2, const std::vector<cv::Mat>& gaussPyrMask)
 	{
 		std::vector<cv::Mat> blendedPyr;
-		for (size_t i = 0; i < laplPyr1.size(); ++i) 
+		for (size_t i = 0; i < laplPyr1.size(); ++i)
 		{
 			cv::Mat blended = laplPyr1[i].mul(gaussPyrMask[i]) + laplPyr2[i].mul(cv::Scalar::all(1.0) - gaussPyrMask[i]);
 			blendedPyr.push_back(blended);
@@ -91,14 +224,14 @@ public:
 		GaussianPyramid2.resize(level + 1);
 		GaussianPyramidMask.resize(level + 1);
 
-		if (src1.depth() == CV_32F) 
+		if (src1.depth() == CV_32F)
 			src1.copyTo(GaussianPyramid1[0]);
-		else 
+		else
 			src1.convertTo(GaussianPyramid1[0], CV_32F);
 
-		if (src2.depth() == CV_32F) 
+		if (src2.depth() == CV_32F)
 			src2.copyTo(GaussianPyramid2[0]);
-		else 
+		else
 			src2.convertTo(GaussianPyramid2[0], CV_32F);
 
 		// Convert mask to float and normalize to [0, 1]
@@ -152,7 +285,7 @@ private:
 	}
 
 public:
-	void filter(const cv::Mat& src, cv::Mat& dest,  std::vector<float> sigma_range, float sigma_space, int filterSize, int level = 2)
+	void filter(const cv::Mat& src, cv::Mat& dest, std::vector<float> sigma_range, float sigma_space, int filterSize, int level = 2)
 	{
 		CV_Assert(!sigma_range.empty());
 
@@ -208,7 +341,7 @@ public:
 		}
 
 		//set last level
-		LaplacianPyramid[level].create( GaussianPyramid[level].size(), GaussianPyramid[level].type()) ;
+		LaplacianPyramid[level].create(GaussianPyramid[level].size(), GaussianPyramid[level].type());
 		LaplacianPyramid[level].setTo(0.);
 
 		//(4) Collapse Laplacian Pyramid to the last level
@@ -320,8 +453,8 @@ public:
 
 		//set last level
 		LaplacianPyramid[level].create(GaussianPyramid[level].size(), GaussianPyramid[level].type());
-		LaplacianPyramid[level].setTo(0.f);
-		//LaplacianPyramid[level] = GaussianPyramid[level];
+		//LaplacianPyramid[level].setTo(0.f);
+		LaplacianPyramid[level] = GaussianPyramid[level];
 
 		//(4) Collapse Laplacian Pyramid to the last level
 		collapseLaplacianPyramid(LaplacianPyramid, LaplacianPyramid[0]);
@@ -815,7 +948,65 @@ public:
 class gammaEnh
 {
 public:
-	void applyGamma(const cv::Mat& srcDest, const cv::Mat& mask, double gamma, double tailPercent = 0.001, double enlargeRangePerc = 0.1)
+	void applyAdaptiveGamma(cv::Mat& srcDest, const cv::Mat& mask)
+	{
+		CV_Assert(!srcDest.empty() && srcDest.type() == CV_16U);
+
+		std::vector<cv::Mat> s{ srcDest };
+		std::vector<cv::Mat> m{ mask };
+
+		std::vector<float> normCumHist;
+		calcCumHist(s, m, normCumHist);
+
+		// Compute the transformation function
+		cv::Mat lut = buildAdaptiveGammaLutCDF(normCumHist);
+
+		// Apply the lookup table
+		remap(lut, s);
+	}
+
+	void applyAdaptiveGamma(std::vector<cv::Mat>& s, const std::vector<cv::Mat>& m)
+	{
+		std::vector<float> normCumHist;
+		calcCumHist(s, m, normCumHist);
+
+		// Compute the transformation function
+		cv::Mat lut = buildAdaptiveGammaLutCDF(normCumHist);
+
+		// Apply the lookup table
+		remap(lut, s);
+	}
+
+	void applyAdaptiveGammaCDF(cv::Mat& srcDest, const cv::Mat& mask)
+	{
+		CV_Assert(!srcDest.empty() && srcDest.type() == CV_16U);
+
+		std::vector<cv::Mat> s{ srcDest };
+		std::vector<cv::Mat> m{ mask };
+
+		std::vector<float> normCumHist;
+		calcCumHistCDF(s, m, normCumHist);
+
+		// Compute the transformation function
+		cv::Mat lut = buildAdaptiveGammaLutCDF(normCumHist);
+
+		// Apply the lookup table
+		remap(lut, s);
+	}
+
+	void applyAdaptiveGammaCDF(std::vector<cv::Mat>& s, const std::vector<cv::Mat>& m)
+	{
+		std::vector<float> normCumHist;
+		calcCumHistCDF(s, m, normCumHist);
+
+		// Compute the transformation function
+		cv::Mat lut = buildAdaptiveGammaLutCDF(normCumHist);
+
+		// Apply the lookup table
+		remap(lut, s);
+	}
+
+	void applyGamma(cv::Mat& srcDest, const cv::Mat& mask, double gamma, double tailPercent = 0.001, double enlargeRangePerc = 0.1)
 	{
 		ushort minValue{ 0 };
 		ushort maxValue{ 0 };
@@ -836,7 +1027,7 @@ public:
 		gammaCorrection(s, gamma, ushort(enlargedMinValue), ushort(enlargedMaxValue));
 	}
 
-	void applyGamma(const std::vector<cv::Mat>& srcDest, const std::vector<cv::Mat>& mask, double gamma, double tailPercent = 0.001, double enlargeRangePerc = 0.1)
+	void applyGamma(std::vector<cv::Mat>& srcDest, const std::vector<cv::Mat>& mask, double gamma, double tailPercent = 0.001, double enlargeRangePerc = 0.1)
 	{
 		ushort minValue{ 0 };
 		ushort maxValue{ 0 };
@@ -855,6 +1046,209 @@ public:
 	}
 
 private:
+	cv::Mat buildAdaptiveGammaLutCDF(const std::vector<float>& normCumHist)
+	{
+		// Determine total number of pixels
+		int totalPixels = normCumHist[normCumHist.size() - 1];
+
+		// Determine the cutoff values
+		const double tailPercent = 0.0001;
+		float upperCutoff = float(double(totalPixels) * (1. - tailPercent));
+		float lowerCutoff = int(double(totalPixels) * tailPercent);
+
+		int maxValue{ 0 };
+		// Find maxValue
+		for (int i = normCumHist.size() - 1; i >= 0; --i) {
+			if (normCumHist[i] < upperCutoff) {
+				maxValue = i;
+				break;
+			}
+		}
+
+		// Find minValue
+		int minValue{ 0 };
+		for (int i = 0; i < normCumHist.size() - 1; ++i) {
+			if (normCumHist[i] > lowerCutoff) {
+				minValue = i;
+				break;
+			}
+		}
+
+
+		// Create a look-up table
+		cv::Mat lut(1, 65536, CV_16UC1);
+		ushort* lut_data = lut.ptr<ushort>();
+
+		for (int i = 0; i < normCumHist.size(); ++i)
+		{
+			int iVal{ i };
+			if (iVal < minValue)
+				iVal = minValue;
+
+			if (iVal > maxValue)
+				iVal = maxValue;
+			lut_data[i] = cv::saturate_cast<ushort>(pow((float(iVal) - float(minValue)) / (float(maxValue) - float(minValue)), 1. - normCumHist[i]) * float(normCumHist.size() - 1));
+		}
+
+		return lut;
+	}
+	cv::Mat buildAdaptiveGammaLut(double gamma, const std::vector<float>& normCumHist)
+	{
+		CV_Assert(gamma >= 0);
+
+		// Compute the transformation function
+		std::vector<ushort> lookupTable(normCumHist.size());
+		for (int i = 0; i < normCumHist.size(); ++i)
+			lookupTable[i] = cv::saturate_cast<ushort>(pow(normCumHist[i], gamma) * 65535.);
+
+
+		// Create a look-up table
+		cv::Mat lut(1, 65536, CV_16UC1);
+		ushort* lut_data = lut.ptr<ushort>();
+
+		for (int i = 0; i < 65536; ++i)
+			lut_data[i] = cv::saturate_cast<ushort>(pow(double(normCumHist[i]), gamma) * 65535.);
+
+		return lut;
+	}
+
+	void remap(const cv::Mat& lut, std::vector<cv::Mat>& srcDest)
+	{
+		// Apply the lookup table
+		const ushort* lut_data = lut.ptr<ushort>();
+		for (int nImage = 0; nImage < srcDest.size(); nImage++)
+		{
+			cv::Mat s(srcDest[nImage]);
+
+			CV_Assert(!s.empty());
+			CV_Assert(s.type() == CV_16UC1);
+
+			for (int y = 0; y < s.rows; ++y)
+			{
+				for (int x = 0; x < s.cols; ++x)
+				{
+					s.at<ushort>(y, x) = lut_data[s.at<ushort>(y, x)];
+				}
+			}
+		}
+	}
+
+	void calcCumHist(const std::vector<cv::Mat>& src, const std::vector<cv::Mat>& mask, std::vector<float>& cumulative)
+	{
+		CV_Assert(src.size() == mask.size());
+
+		// Calculate the histogram
+		const int histSize = 65536;
+		cv::Mat hist;
+		float range[] = { 0, 65536 };
+		const float* histRange = { range };
+		bool uniform = true, accumulate = true;
+
+		for (auto n = 0; n < src.size(); ++n)
+		{
+			auto s{ src.at(n) };
+			auto m{ mask.at(n) };
+			CV_Assert(s.type() == CV_16U);
+			CV_Assert(m.type() == CV_8U);
+			cv::calcHist(&s, 1, 0, m, hist, 1, &histSize, &histRange, uniform, accumulate);
+		}
+
+		// Calculate the cumulative histogram
+		cumulative.resize(histSize);
+		cumulative[0] = (float)hist.at<float>(0);
+
+		for (int i = 1; i < cumulative.size(); ++i)
+			cumulative[i] = cumulative[i - 1] + (float)hist.at<float>(i);
+
+		// Normalize the cumulative histogram
+		float totalPixels = cumulative[cumulative.size() - 1];
+
+		if (totalPixels > 0.f)
+		{
+			for (int i = 0; i < cumulative.size(); ++i)
+				cumulative[i] = cumulative[i] / totalPixels;
+		}
+	}
+
+
+	void calcCumHistCDF(const std::vector<cv::Mat>& src, const std::vector<cv::Mat>& mask, std::vector<float>& cumulative)
+	{
+		CV_Assert(src.size() == mask.size());
+
+		// Calculate the histogram
+		const int histSize = 65536;
+		cv::Mat hist;
+		float range[] = { 0, 65536 };
+		const float* histRange = { range };
+		bool uniform = true, accumulate = true;
+
+		for (auto n = 0; n < src.size(); ++n)
+		{
+			auto s{ src.at(n) };
+			auto m{ mask.at(n) };
+			CV_Assert(s.type() == CV_16U);
+			CV_Assert(m.type() == CV_8U);
+			cv::calcHist(&s, 1, 0, m, hist, 1, &histSize, &histRange, uniform, accumulate);
+		}
+
+		// Calculate the cumulative histogram
+		cumulative.resize(histSize);
+		cumulative[0] = (float)hist.at<float>(0);
+
+		for (int i = 1; i < cumulative.size(); ++i)
+			cumulative[i] = cumulative[i - 1] + (float)hist.at<float>(i);
+
+		float totalPixels = cumulative[cumulative.size() - 1];
+		if (totalPixels > 0.f)
+		{
+			for (int i = 0; i < cumulative.size(); ++i)
+				cumulative[i] = cumulative[i] / totalPixels;
+		}
+
+		// modify pdf
+		float pdfMin = 0.f;
+		float pdfMax = 1.f;
+
+		// Find minValue
+		for (int i = 0; i < histSize; ++i)
+		{
+			if ((float)hist.at<float>(i) < pdfMin)
+				pdfMin = (float)hist.at<float>(i);
+		}
+
+		// Find maxValue
+		for (int i = 0; i < histSize; ++i)
+		{
+			if ((float)hist.at<float>(i) > pdfMax)
+				pdfMax = (float)hist.at<float>(i);
+		}
+
+		// modify pdf
+		std::vector<float> pdfw(histSize);
+		for (int i = 1; i < histSize; ++i)
+		{
+			const float p = pdfMax * powf(((float)hist.at<float>(i) - pdfMin) / (pdfMax - pdfMin), cumulative[i]);
+			pdfw[i] = p;
+		}
+
+		// Calculate the cumulative histogram
+		cumulative.resize(histSize);
+		cumulative[0] = pdfw[0];
+
+		for (int i = 1; i < cumulative.size(); ++i)
+			cumulative[i] = cumulative[i - 1] + pdfw[i];
+
+		// Normalize the cumulative histogram
+		float tv = float(cumulative[cumulative.size() - 1]);
+
+		if (tv > 0.f)
+		{
+			for (int i = 0; i < cumulative.size(); ++i)
+				cumulative[i] = cumulative[i] / tv;
+		}
+	}
+
+
 	// Function to compute histogram and determine minValue and maxValue
 	void findMinMax(const std::vector<cv::Mat>& src, const std::vector<cv::Mat>& mask, ushort& minValue, ushort& maxValue, double tailPercent = 0.01)
 	{
@@ -908,26 +1302,11 @@ private:
 	}
 
 	// Function to apply gamma correction
-	void gammaCorrection(const std::vector<cv::Mat>& src, double gamma, ushort minValue, ushort maxValue)
+	void gammaCorrection(std::vector<cv::Mat>& src, double gamma, ushort minValue, ushort maxValue)
 	{
 		cv::Mat lut = buildGammaLut(gamma, minValue, maxValue);
-		const ushort* lut_data = lut.ptr<ushort>();
 
-		for (int nImage = 0; nImage < src.size(); nImage++)
-		{
-			cv::Mat s(src[nImage]);
-
-			CV_Assert(!s.empty());
-			CV_Assert(s.type() == CV_16UC1);
-
-			for (int y = 0; y < s.rows; ++y)
-			{
-				for (int x = 0; x < s.cols; ++x)
-				{
-					s.at<ushort>(y, x) = lut_data[s.at<ushort>(y, x)];
-				}
-			}
-		}
+		remap(lut, src);
 	}
 
 	cv::Mat buildGammaLut(double gamma, ushort minValue, ushort maxValue)
@@ -1089,29 +1468,29 @@ private:
 		CV_Assert(minValue < maxValue);
 
 		// Calculate the scale and offset
-		float scale = 1.0f / float (maxValue - minValue);
+		float scale = 1.0f / float(maxValue - minValue);
 		float offset = minValue;
-		
+
 
 		// Create a look-up table
 		cv::Mat lut(1, 65536, CV_16UC1);
 		ushort* lut_data = lut.ptr<ushort>();
 
 		// gamma between minValue and maxValue and linear outside
-		for (int i = 0; i < 65536; ++i) 
+		for (int i = 0; i < 65536; ++i)
 		{
 			if (i < minValue) {
 				lut_data[i] = i;
 			}
-			else if (i > maxValue) 
+			else if (i > maxValue)
 			{
 				lut_data[i] = i;
 			}
-			else 
+			else
 			{
 				const float normalized = (i - offset) * scale - 0.5f;
 				lut_data[i] = cv::saturate_cast<ushort>(
-					( 1.f / ( 1.f + std::expf( -normalized / float(sigma)))) * float((maxValue - minValue)) + float(minValue));
+					(1.f / (1.f + std::expf(-normalized / float(sigma)))) * float((maxValue - minValue)) + float(minValue));
 			}
 		}
 
@@ -1125,8 +1504,8 @@ private:
 
 class projDenoise
 {
-public:	
-	void apply(std::vector<cv::Mat>& srcDest, const cv::Mat& flatProjection, int flatBorder = 200, float sigmaSpace= 0.7f, int filterSize=5, int level = 3)
+public:
+	void apply(std::vector<cv::Mat>& srcDest, const cv::Mat& flatProjection, int flatBorder = 200, float sigmaSpace = 0.7f, int filterSize = 5, int level = 3)
 	{
 		cv::Mat flatVST;
 		flatProjection.convertTo(flatVST, CV_32F);
@@ -1135,7 +1514,7 @@ public:
 		std::vector<float> sigmaRange = noiseEstimate(flatVST, flatBorder, level);
 
 		MSEBilateral bFilter;
-		
+
 		for (auto& m : srcDest)
 		{
 			cv::Mat vst;
@@ -1150,7 +1529,7 @@ public:
 	}
 
 private:
-	std::vector<float> noiseEstimate(const cv::Mat & src, int border,  int level)
+	std::vector<float> noiseEstimate(const cv::Mat& src, int border, int level)
 	{
 		std::vector<cv::Mat> destPyramid;
 		cv::Mat reduced(src.rowRange(border, src.rows - border).colRange(border, src.cols - border));
@@ -1161,7 +1540,7 @@ private:
 		std::vector<float> noiseSigma;
 		for (const auto& m : destPyramid)
 		{
-			cv::Size kSize( 11,11 );
+			cv::Size kSize(11, 11);
 
 			cv::Mat mean;
 			cv::Mat sqMean;
@@ -1170,9 +1549,9 @@ private:
 			cv::boxFilter(m, mean, -1, kSize, cv::Point(-1, -1), true);
 			cv::pow(mean, 2., mean);
 			cv::boxFilter(sqMean, sqMean, -1, kSize, cv::Point(-1, -1), true);
-			
+
 			mean = sqMean - mean;
-			
+
 			cv::Mat meanWoBorder(mean.rowRange(kSize.height, mean.rows - kSize.height).colRange(kSize.width, mean.cols - kSize.width));
 			cv::sqrt(meanWoBorder, meanWoBorder);
 
