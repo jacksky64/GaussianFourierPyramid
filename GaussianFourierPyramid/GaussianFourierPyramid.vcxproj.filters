@@ -23,9 +23,17 @@
     <ClInclude Include="LLF.hpp">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
+    <ClInclude Include="maskGauss.h">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
     <None Include="ClassDiagram.cd" />
+  </ItemGroup>
+  <ItemGroup>
+    <CudaCompile Include="maskGauss.cu">
+      <Filter>ソース ファイル</Filter>
+    </CudaCompile>
   </ItemGroup>
 </Project>

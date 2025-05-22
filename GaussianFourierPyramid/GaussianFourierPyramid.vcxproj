@@ -153,10 +153,18 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="LLF.hpp" />
+    <ClInclude Include="maskGauss.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="ClassDiagram.cd" />
     <None Include="packages.config" />
+  </ItemGroup>
+  <ItemGroup>
+    <CudaCompile Include="maskGauss.cu">
+      <GPUDebugInfo Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</GPUDebugInfo>
+      <GenerateLineInfo Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</GenerateLineInfo>
+      <DebugInformationFormat Condition="'$(Configuration)|$(Platform)'=='Release|x64'">ProgramDatabase</DebugInformationFormat>
+    </CudaCompile>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

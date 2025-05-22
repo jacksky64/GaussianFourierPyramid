@@ -1,13 +1,15 @@
 #include "LLF.hpp"
+#include "maskGauss.h"
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/opencv.hpp>
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/highgui.hpp>
-
-#include <iostream>
-#include <vector>
+#include <tbb/parallel_for.h>
+#include <tbb/parallel_for.h>
+#include <tbb/blocked_range2d.h>
+#include <opencv2/opencv.hpp>
 
 
 #include <boost\property_tree\xml_parser.hpp>
@@ -15,8 +17,16 @@
 #include <boost\tokenizer.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 
+
+#include <cmath>
+#include <string>
+#include <iostream>
+#include <vector>
 #include <filesystem>
+#include <exception>
 #include <algorithm>
+#include <chrono>
+
 
 namespace po = boost::program_options;
 namespace fs = std::filesystem;
@@ -1813,6 +1823,7 @@ void boxFilterMask(const cv::Mat& src, const cv::Mat& mask, cv::Mat& result, int
 	cv::divide(srcFiltered, gaussMask, result);
 }
 
+#if 0
 // Helper function to compute B-spline basis functions
 std::vector<float> bsplineBasis(int k, float t, const std::vector<float>& knots) {
 	std::vector<float> b(knots.size() - k - 1, 0.0f);
@@ -1907,7 +1918,7 @@ void sift(const cv::Mat& image, cv::Mat& IMF, int maskSize) {
 	IMF = image - meanEnvelope;
 }
 
-
+// multiscale empirical decomposition
 int BMED(std::string inputFile, std::string inputFlatFile, std::string outputFile)
 {
 	//load image
@@ -1959,24 +1970,520 @@ int BMED(std::string inputFile, std::string inputFlatFile, std::string outputFil
 	cv::waitKey(0);
 	return 0;
 }
+#endif
 
 
 
+cv::Mat saliencyMap(cv::Mat& img)
+{
+	float ratio = img.cols / img.cols;
+	cv::resize(img, img, cv::Size(img.cols * ratio, img.rows * ratio));
 
+	cv::Mat planes[] = { cv::Mat_<float>(img), cv::Mat::zeros(img.size(), CV_32F) };
+	cv::Mat complexImg;
+	cv::merge(planes, 2, complexImg);
+	cv::dft(complexImg, complexImg);
+	cv::split(complexImg, planes);
 
+	cv::Mat mag, logmag, smooth, spectralResidual;
+	cv::magnitude(planes[0], planes[1], mag);
+	cv::log(mag, logmag);
+	cv::boxFilter(logmag, smooth, -1, cv::Size(251, 251));
+	cv::subtract(logmag, smooth, spectralResidual);
+	cv::exp(spectralResidual, spectralResidual);
 
+	planes[0] = planes[0].mul(spectralResidual) / mag;
+	planes[1] = planes[1].mul(spectralResidual) / mag;
+
+	cv::merge(planes, 2, complexImg);
+	cv::dft(complexImg, complexImg, cv::DFT_INVERSE | cv::DFT_SCALE);
+	cv::split(complexImg, planes);
+	cv::magnitude(planes[0], planes[1], mag);
+	cv::multiply(mag, mag, mag);
+	cv::GaussianBlur(mag, mag, cv::Size(31, 31), 5, 5);
+	cv::normalize(mag, mag, 1.0, 0.0, NORM_MINMAX);
+	return mag;
+}
+
+void testSaliency(std::string& inputFile, std::string& outputFile)
+{
+	//load image
+	cv::Mat img;
+
+	img = cv::imread(inputFile, cv::IMREAD_GRAYSCALE | cv::IMREAD_ANYDEPTH);
+	auto r = saliencyMap(img);
+
+	cv::imwrite(outputFile, r);
+}
+
+// save a series of images
+void saveImages(const std::string& outputFolder, const std::vector<cv::Mat>& images, const std::string& prefix, const std::string& ext)
+{
+	if (std::filesystem::exists(outputFolder) && !std::filesystem::is_directory(outputFolder))
+		throw(std::runtime_error("output folder name already exist"));
+
+	for (auto n = 0; n < images.size(); ++n)
+	{
+		std::filesystem::path p{ outputFolder };
+		std::ostringstream ost;
+		ost << prefix << std::setw(3) << std::setfill('0') << n << "." << ext;
+		std::filesystem::path fn{ ost.str() };
+		p /= fn;
+		cv::imwrite(p.string(), images[n]);
+	}
+}
+
+// Load a series of images into a vector
+std::vector<cv::Mat> loadImages(const std::vector<std::string>& imagePaths) {
+	std::vector<cv::Mat> images;
+	for (const auto& path : imagePaths) {
+		cv::Mat img = cv::imread(path, cv::IMREAD_UNCHANGED);
+		if (img.empty() || img.type() != CV_32F) {
+			std::cerr << "Failed to load image: " << path << std::endl;
+			continue;
+		}
 #if 0
+		cv::Mat red;
+		img.colRange(2000, img.cols).rowRange(1200, 1600).copyTo(red);
+		images.push_back(red);
+#else
+		images.push_back(img);
+#endif
+	}
+	return images;
+}
+
+// Create an arg-sort map
+std::vector<cv::Mat> createArgMaxMap(const std::vector<cv::Mat>& images)
+{
+	if (images.empty())
+		throw std::runtime_error(std::string(__FUNCTION__) + std::string(" empty image set"));
+
+	const int rows = images[0].rows;
+	const int cols = images[0].cols;
+
+	std::vector<cv::Mat> argMaxMaps;
+	for (auto n = 0; n < images.size(); ++n)
+		argMaxMaps.emplace_back(cv::Mat(rows, cols, CV_8UC1, cv::Scalar(0)));
+
+	const int nMaxThread = tbb::this_task_arena::max_concurrency();
+	const int nSliceRows = rows / nMaxThread;
+
+	tbb::parallel_for(
+		tbb::blocked_range<size_t>(0, rows, nSliceRows), [&](const tbb::blocked_range<size_t>& range) -> void
+		{
+			std::vector<std::pair<float, int>> pixelValues(images.size());
+			for (int y = static_cast<int>(range.begin()); y < range.end(); y++)
+			{
+				for (int x = 0; x < cols; x++) {
+					for (int i = 0; i < images.size(); i++) {
+						pixelValues[i] = std::pair<float, int>{ images[i].at<float>(y, x), i };
+					}
+
+					// Sort by intensity
+					std::sort(pixelValues.begin(), pixelValues.end(),
+						[](const std::pair<float, int>& a, const std::pair<float, int>& b) {
+							return a.first < b.first;
+						});
+
+					// Fill argMaxMaps with sorted indices
+					for (int i = 0; i < images.size(); i++) {
+						argMaxMaps[i].at<uchar>(y, x) = static_cast<uchar>(pixelValues[i].second);
+					}
+				}
+			}
+		});
+	return argMaxMaps;
+}
+
+// Morphological operations on each of the top three argMax maps
+void regularizeIndexes(std::vector<cv::Mat>& argMaxMaps, int openCloseKernelSize = 3)
+{
+	cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(openCloseKernelSize, openCloseKernelSize));
+#if 0 	
+	for (int i = 0; i < argMaxMaps.size(); i++) {
+		cv::morphologyEx(argMaxMaps[i], argMaxMaps[i], cv::MORPH_CLOSE, kernel);
+		cv::morphologyEx(argMaxMaps[i], argMaxMaps[i], cv::MORPH_OPEN, kernel);
+	}
+#else
+
+	const int nSlices{ (int)argMaxMaps.size() };
+
+	std::vector<cv::Mat> pixelValueMaps;
+	for (auto n = 0; n < nSlices; ++n)
+		pixelValueMaps.emplace_back(cv::Mat(argMaxMaps[n].size(), CV_32F, cv::Scalar(0)));
+
+	const int nMaxThread = tbb::this_task_arena::max_concurrency();
+	const int nSlice = nSlices / nMaxThread;
+	tbb::parallel_for(
+		tbb::blocked_range<size_t>(0, nSlices, nSlice), [&](const tbb::blocked_range<size_t>& range) -> void
+		{
+			for (int i = range.begin(); i < range.end(); i++)
+			{
+				cv::morphologyEx(argMaxMaps[i], argMaxMaps[i], cv::MORPH_OPEN, kernel);
+				cv::morphologyEx(argMaxMaps[i], argMaxMaps[i], cv::MORPH_CLOSE, kernel);
+			}
+		});
+#endif
+}
+
+// Extract pixel values using the regularized argMax maps
+std::vector<cv::Mat> extractPixelValues(const std::vector<cv::Mat>& images, const std::vector<cv::Mat>& argMaxMaps)
+{
+	const int nSlices{ (int)argMaxMaps.size() };
+
+	std::vector<cv::Mat> pixelValueMaps;
+	for (auto n = 0; n < nSlices; ++n)
+		pixelValueMaps.emplace_back(cv::Mat(argMaxMaps[n].size(), CV_32F, cv::Scalar(0)));
+
+	const int nMaxThread = tbb::this_task_arena::max_concurrency();
+	const int nSlice = nSlices / nMaxThread;
+
+	tbb::parallel_for(
+		tbb::blocked_range<size_t>(0, nSlices, nSlice), [&](const tbb::blocked_range<size_t>& range) -> void
+		{
+			for (int i = range.begin(); i < range.end(); i++)
+			{
+				for (int y = 0; y < argMaxMaps[i].rows; y++) {
+					for (int x = 0; x < argMaxMaps[i].cols; x++) {
+						uchar index = argMaxMaps[i].at<uchar>(y, x);
+						pixelValueMaps[i].at<float>(y, x) = images[index].at<float>(y, x);
+					}
+				}
+			}
+		});
+
+	return pixelValueMaps;
+}
+
+cv::Mat calculatePixelwiseMedian(const std::vector<cv::Mat>& images)
+{
+	CV_Assert(!images.empty() && images[0].type() == CV_32F);
+
+	int rows = images[0].rows;
+	int cols = images[0].cols;
+
+	for (size_t i = 1; i < images.size(); ++i)
+	{
+		CV_Assert(images[i].rows == rows && images[i].cols == cols && images[i].type() == CV_32F);
+	}
+
+	cv::Mat medianImage(rows, cols, CV_32F);
+
+	std::vector<float> pixelValues(images.size());
+
+	// Compute median for each pixel
+	for (int y = 0; y < rows; ++y)
+	{
+		for (int x = 0; x < cols; ++x)
+		{
+			// Collect pixel values at (x, y) from each image
+			for (size_t i = 0; i < images.size(); ++i)
+			{
+				pixelValues[i] = images[i].at<float>(y, x);
+			}
+
+			// Sort the pixel values and pick the median
+			std::nth_element(pixelValues.begin(), pixelValues.begin() + pixelValues.size() / 2, pixelValues.end());
+			float medianValue = pixelValues[pixelValues.size() / 2];
+
+			// Set the median value at (x, y) in the output image
+			medianImage.at<float>(y, x) = medianValue;
+		}
+	}
+	return medianImage;
+}
+
+// Function to calculate the per-pixel median across a series of 16-bit grayscale images
+cv::Mat calculatePixelwiseMean(const std::vector<cv::Mat>& images, std::vector<float> weights)
+{
+	CV_Assert(!images.empty() && images[0].type() == CV_32F);
+	CV_Assert(images.size() == weights.size());
+
+	cv::Mat meanImage(images[0].size(), images[0].type(), cv::Scalar(0.));
+
+	// Compute median for each pixel
+	float weightsSum{ 0.f };
+	for (int n = 0; n != images.size(); ++n)
+	{
+		cv::addWeighted(meanImage, 1., images[n], weights[n], 0., meanImage);
+		weightsSum += weights[n];
+	}
+
+	cv::divide(meanImage, weightsSum, meanImage);
+
+	return meanImage;
+}
+
+std::vector<cv::Mat> denoiseBilateral(const std::vector<cv::Mat>& src, float sigma_range, float sigma_space, int filterSize, int levels)
+{
+	MSEBilateral bl;
+
+	std::vector<cv::Mat> r;
+	for (auto m : src)
+	{
+		cv::Mat slice;
+		cv::Mat anatomicalMask;
+		anatomicalMask = m < 1.;
+		m.setTo(38., anatomicalMask);
+		bl.filterHPF(m, slice, sigma_range, sigma_space, filterSize, levels);
+		r.push_back(slice);
+	}
+
+	return r;
+}
+
+
+int testArgMax(const std::string& inputFolder, const std::string& outputFolder)
+{
+	// create MIP maps
+
+	// index regularize kernel size
+	const int openCloseKernelSize{ 0 };
+
+	// top slice used in median filter
+	const int zValuesMedianLength{ 5 };
+
+	// top slice used in weighted mean filter
+	const int zValuesMeanLength{ 5 };
+
+	// weighted mean filter weights
+	const std::vector<float> zValuesMeanWeights{ 1.f, 1.f, 1.f, 0.9f, .8f };
+
+	CV_Assert(zValuesMeanWeights.size() == zValuesMeanLength);
+
+	// get file names
+	auto inputFiles = getFolderFiles(inputFolder);
+
+	// load images
+	std::vector<cv::Mat> images = loadImages(inputFiles);
+
+	if (images.empty()) {
+		std::cerr << "No images loaded." << std::endl;
+		return -1;
+	}
+
+	// denoise
+	float sigma_range = 1.0f;
+	float sigma_space = 0.7;
+	int filterSize = 5;
+	int levels = 5;
+
+	std::vector<cv::Mat> denoiseImages = denoiseBilateral(images, sigma_range, sigma_space, filterSize, levels);
+
+
+	// Create argMax maps and regularize them
+	std::vector<cv::Mat> argMaxMaps = createArgMaxMap(denoiseImages);
+
+
+	// regularize maps
+	if (openCloseKernelSize > 0)
+		regularizeIndexes(argMaxMaps, openCloseKernelSize);
+
+
+	// Extract pixel values based on regularized index maps
+	std::vector<cv::Mat> pixelValueMaps = extractPixelValues(denoiseImages, argMaxMaps);
+
+	// multi-slice median
+	std::vector<cv::Mat> topSlices(pixelValueMaps.end() - zValuesMedianLength, pixelValueMaps.end());
+	auto topMedian = calculatePixelwiseMedian(topSlices);
+
+	// multi-slice mean
+	std::vector<cv::Mat> topSlicesMean(pixelValueMaps.end() - zValuesMeanLength, pixelValueMaps.end());
+	auto topMean = calculatePixelwiseMean(topSlicesMean, zValuesMeanWeights);
+
+	fs::path meanFolder(outputFolder);
+	fs::create_directories(meanFolder);
+
+	fs::path meanFile(meanFolder);
+	meanFile /= "MIPmean.tif";
+	cv::imwrite(meanFile.string(), topMean);
+
+	fs::path meadianFile(meanFolder);
+	meadianFile /= "MIPmedian.tif";
+	cv::imwrite(meadianFile.string(), topMedian);
+
+	// save index map
+	std::filesystem::path pidx(outputFolder);
+	pidx /= "index";
+	std::filesystem::create_directories(pidx);
+
+	saveImages(pidx.string(), argMaxMaps, "idx", "tif");
+
+	// save sorted stack
+	std::filesystem::path sorted(outputFolder);
+	sorted /= "sorted";
+	std::filesystem::create_directories(sorted);
+
+	saveImages(sorted.string(), pixelValueMaps, "sorted", "tif");
+
+	return 0;
+}
+
+
+
+vector<float> createGaussianLUT(float sigma, float maxDistance, double resolution = 0.25)
+{
+	int size = static_cast<int>(maxDistance / resolution) + 1;
+	vector<float> lut(size);
+	for (int i = 0; i < size; ++i) {
+		float d = i * resolution;
+		lut[i] = exp(-(d * d) / (2 * sigma * sigma));
+	}
+	return lut;
+}
+
+// Helper to get gaussian weight from LUT
+inline float getGaussianWeight(const vector<float>& lut, float distance, float resolution = 0.25) {
+	int index = static_cast<int>(distance / resolution + 0.5); // round to nearest
+	if (index >= lut.size()) return 0.0;
+	return lut[index];
+}
+
+
+int maskedGaussian(Mat& grayscale, Mat& mask, Mat& contour, float sigma = 200.0, float resolution = 0.25)
+{
+	if (grayscale.empty() || mask.empty() || contour.empty()) {
+		cerr << "Could not load images." << endl;
+		return -1;
+	}
+
+	if (grayscale.type() != CV_32F || mask.type() != CV_8UC1 || contour.type() != CV_8UC1) {
+		cerr << "Unexpected image types." << endl;
+		return -1;
+	}
+
+	// cv::Size fullSize(grayscale.size());
+
+	// Parameters
+	const float maxDistance = sqrt(grayscale.cols * grayscale.cols + grayscale.rows * grayscale.rows);
+	vector<float> gaussianLUT = createGaussianLUT(sigma, maxDistance, resolution);
+
+	// Extract contour points
+	vector<Point> contourPoints;
+	vector<float> contourValues;
+	for (int y = 0; y < contour.rows; ++y) {
+		for (int x = 0; x < contour.cols; ++x) {
+			if (contour.at<uchar>(y, x) > 0) {
+				contourPoints.emplace_back(x, y);
+				contourValues.emplace_back(grayscale.at<float>(x, y));
+			}
+		}
+	}
+
+	// Prepare output image
+	Mat output = Mat::zeros(grayscale.size(), CV_32F);
+
+	//tbb::parallel_for(tbb::blocked_range<int>(0, 100), [&](const tbb::blocked_range<int>& r) {
+	const tbb::blocked_range<int> r(0, 100);
+	for (auto k = r.begin(); k < r.end(); ++k)
+		computeWeightedAverage(mask.ptr<uchar>(0), &contourPoints[0], &contourValues[0], output.ptr<float>(0), grayscale.rows, grayscale.cols,
+			contourPoints.size(), sigma);
+	//});
+
+	Mat outputCPU = Mat::zeros(grayscale.size(), CV_32F);
+
+	// Compute weighted average for each mask point
+	tbb::parallel_for(tbb::blocked_range2d<int>(0, mask.rows, 0, mask.cols),
+		[&](const tbb::blocked_range2d<int>& r) {
+			for (int y = r.rows().begin(); y < r.rows().end(); ++y)
+			{
+				for (int x = r.cols().begin(); x < r.cols().end(); ++x)
+				{
+					if (mask.at<uchar>(y, x) == 0)
+						continue;
+
+					float weightedSum = 0.0;
+					float weightTotal = 0.0;
+
+					for (int n = 0; n < contourPoints.size(); ++n)
+					{
+						const Point& cp{ contourPoints.at(n) };
+						const float dist = norm(Point(x, y) - cp);
+						const float weight = getGaussianWeight(gaussianLUT, dist);
+						const float intensity = contourValues.at(n);
+
+						weightedSum += intensity * weight;
+						weightTotal += weight;
+					}
+
+					if (weightTotal > 0) {
+						outputCPU.at<float>(y, x) = static_cast<float>(weightedSum / weightTotal);
+					}
+				}
+			}
+		});
+
+
+	return 0;
+}
+
+int testGaussianMask()
+{
+	// Image size
+	const int width = 2048;
+	const int height = 2048;
+	const Point center(width / 2, height / 2);
+	const int radius = 512;
+
+	// Create a grayscale image with random intensities
+	Mat grayscale(height, width, CV_32F);
+
+	randn(grayscale, Scalar(1000.), Scalar(100.));
+
+	// Create mask image: filled circle
+	Mat mask = Mat::zeros(height, width, CV_8UC1);
+	circle(mask, center, radius, Scalar(255), FILLED);
+
+	// Create contour image: circle border
+	Mat contour = Mat::zeros(height, width, CV_8UC1);
+	circle(contour, center, radius, Scalar(255), 1);  // thickness = 1 for border
+
+
+	// Inside the testGaussianMask function
+	double sigma = 200.0;
+	double resolution = 0.25;
+	int numProjections = 10;
+	std::vector<cv::Mat> result(numProjections);
+
+	auto start = std::chrono::high_resolution_clock::now();
+
+	for (auto k = 0; k < numProjections; ++k)
+		result[k] = maskedGaussian(grayscale, mask, contour, sigma, resolution);
+
+	auto end = std::chrono::high_resolution_clock::now();
+	std::chrono::duration<double> elapsed = end - start;
+	std::cout << "Time/frame : " << elapsed.count() / (double(numProjections)) << " seconds" << std::endl;
+
+	return 0;
+}
+
+
+
+#if 1
 
 int main()
 {
+	testGaussianMask();
+
+	std::string inputFileArgMax = "d:\\tmp\\centralProjections";
+	std::string outputiFileArgMax = "d:\\tmp\\sortSlices";
+
+	testArgMax(inputFileArgMax, outputiFileArgMax);
+
+#if 0
+	std::string inputFileSal = "E:\\temp\\GaussianFourierPyramid\\GaussianFourierPyramid\\04\\SIRT_reduced_NoDen\\slices\\s_0025.png";
+	std::string outputFileSal = ".\\s_0025_sal.png";
+
+	testSaliency(inputFileSal, outputFileSal);
+#endif
+
+#if 0	
 	std::string inputBMED = "E:\\soliddetectorimages\\TomoImages\\20240105 Metaltronica\\data\\04\\png_reduced\\04_06.png";
 	std::string inputFlatBMED = "E:\\soliddetectorimages\\TomoImages\\20240105 Metaltronica\\Flat_field\\31kVp-120mAs- saturata\\png_reduced_80mAsTo120mAs\\07.png";
 	std::string outputFileBMED = "d:\\tmp\\outBMED.tif";
 
 	BMED(inputBMED, inputFlatBMED, outputFileBMED);
-
-
-#if 0
 	std::string inputFileDWT = "E:\\temp\\GaussianFourierPyramid\\GaussianFourierPyramid\\04\\SIRT_reduced_NoDen\\slices\\s_0025.png";
 	testDwt(inputFileDWT);
 #endif
@@ -1989,6 +2496,8 @@ int main()
 	std::string outputFile = ".\\s_0027_bilateral.png";
 	testBilateralDenoise(inputFile, outputFile);
 #endif
+
+#if 0
 	// bilateral MSE
 	//std::string inputFile = ".\\s_0027.png";
 	std::string inputFileT0 = "E:\\temp\\GaussianFourierPyramid\\GaussianFourierPyramid\\04\\SIRT_reduced_NoDen\\slices\\s_0025.png";
@@ -2015,8 +2524,6 @@ int main()
 
 	const ushort maskThreshold14{ 500 };
 	testAdaptiveGammaVolume(inputFolderGammaAdaptive, outputFolderGammaAdaptive, maskThreshold14);
-
-
 
 
 	// equalize proj
@@ -2138,12 +2645,14 @@ int main()
 		std::filesystem::create_directories(outputFolderGammaMSE);
 
 	testGammaVolume(inputFolderGammaMSE, outputFolderGammaMSE, maskThreshold);
+#endif
 
 	return 0;
 }
 
 #endif
 
+#if 0
 #include <iostream>
 #include <vector>
 #include <opencv2/opencv.hpp>
@@ -2211,6 +2720,7 @@ int main() {
 	return 0;
 }
 
+#endif
 
 
 #if 0
