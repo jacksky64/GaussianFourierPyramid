@@ -1,4 +1,3 @@
 #include <opencv2/core.hpp>
 
-bool computeWeightedAverage(const uchar* mask, const cv::Point* contourPoints, const float* contourValues,
-    float* output, int rows, int cols, int numContourPoints, float sigma);
+cv::Mat maskedGaussianGPU(const cv::Mat& grayscale, const cv::Mat& mask, const cv::Mat& contour, float sigma);

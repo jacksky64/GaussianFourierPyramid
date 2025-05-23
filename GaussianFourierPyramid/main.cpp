@@ -2340,20 +2340,17 @@ inline float getGaussianWeight(const vector<float>& lut, float distance, float r
 	return lut[index];
 }
 
-
-int maskedGaussian(Mat& grayscale, Mat& mask, Mat& contour, float sigma = 200.0, float resolution = 0.25)
+cv::Mat maskedGaussian(Mat& grayscale, Mat& mask, Mat& contour, float sigma = 200.0, float resolution = 0.25)
 {
 	if (grayscale.empty() || mask.empty() || contour.empty()) {
 		cerr << "Could not load images." << endl;
-		return -1;
+		return cv::Mat();
 	}
 
 	if (grayscale.type() != CV_32F || mask.type() != CV_8UC1 || contour.type() != CV_8UC1) {
 		cerr << "Unexpected image types." << endl;
-		return -1;
+		return cv::Mat();
 	}
-
-	// cv::Size fullSize(grayscale.size());
 
 	// Parameters
 	const float maxDistance = sqrt(grayscale.cols * grayscale.cols + grayscale.rows * grayscale.rows);
@@ -2370,16 +2367,6 @@ int maskedGaussian(Mat& grayscale, Mat& mask, Mat& contour, float sigma = 200.0,
 			}
 		}
 	}
-
-	// Prepare output image
-	Mat output = Mat::zeros(grayscale.size(), CV_32F);
-
-	//tbb::parallel_for(tbb::blocked_range<int>(0, 100), [&](const tbb::blocked_range<int>& r) {
-	const tbb::blocked_range<int> r(0, 100);
-	for (auto k = r.begin(); k < r.end(); ++k)
-		computeWeightedAverage(mask.ptr<uchar>(0), &contourPoints[0], &contourValues[0], output.ptr<float>(0), grayscale.rows, grayscale.cols,
-			contourPoints.size(), sigma);
-	//});
 
 	Mat outputCPU = Mat::zeros(grayscale.size(), CV_32F);
 
@@ -2415,8 +2402,10 @@ int maskedGaussian(Mat& grayscale, Mat& mask, Mat& contour, float sigma = 200.0,
 		});
 
 
-	return 0;
+	return outputCPU;
 }
+
+
 
 int testGaussianMask()
 {
@@ -2431,6 +2420,13 @@ int testGaussianMask()
 
 	randn(grayscale, Scalar(1000.), Scalar(100.));
 
+	for (int y = 0; y < grayscale.rows; ++y) {
+		for (int x = 0; x < grayscale.cols; ++x) {
+			grayscale.at<float>(cv::Point(x, y)) += float(x) + float(y);
+		}
+	}
+	
+
 	// Create mask image: filled circle
 	Mat mask = Mat::zeros(height, width, CV_8UC1);
 	circle(mask, center, radius, Scalar(255), FILLED);
@@ -2441,19 +2437,36 @@ int testGaussianMask()
 
 
 	// Inside the testGaussianMask function
-	double sigma = 200.0;
-	double resolution = 0.25;
-	int numProjections = 10;
-	std::vector<cv::Mat> result(numProjections);
+	float sigma = 2.f* radius / 3.f ;
+	float resolution = 0.25;
+	int numTest = 10;
+	cv::Mat resultCPU;
 
 	auto start = std::chrono::high_resolution_clock::now();
 
-	for (auto k = 0; k < numProjections; ++k)
-		result[k] = maskedGaussian(grayscale, mask, contour, sigma, resolution);
+	for (auto k = 0; k < numTest; ++k)
+		resultCPU = maskedGaussian(grayscale, mask, contour, sigma, resolution);
 
 	auto end = std::chrono::high_resolution_clock::now();
 	std::chrono::duration<double> elapsed = end - start;
-	std::cout << "Time/frame : " << elapsed.count() / (double(numProjections)) << " seconds" << std::endl;
+	std::cout << "Time/frame : " << elapsed.count() / (double(numTest)) << " seconds" << std::endl;
+	
+	cv::imwrite("d:\\tmp\\output.tif", resultCPU);
+
+
+
+	cv::Mat resultGPU;
+	start = std::chrono::high_resolution_clock::now();
+
+	for (auto k = 0; k < numTest; ++k)
+		resultGPU = maskedGaussianGPU(grayscale, mask, contour, sigma);
+
+	end = std::chrono::high_resolution_clock::now();
+	elapsed = end - start;
+	std::cout << "Time/frame : " << elapsed.count() / (double(numTest)) << " seconds" << std::endl;
+
+	cv::imwrite("d:\\tmp\\outputGPU.tif", resultGPU);
+	cv::imwrite("d:\\tmp\\srcImage.tif", grayscale);
 
 	return 0;
 }
